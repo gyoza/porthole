@@ -12,7 +12,8 @@ dist:
 	mkdir -p dist
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/$(BINARY)_$(VERSION)_linux_amd64 $(PKG)
 	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/$(BINARY)_$(VERSION)_darwin_amd64 $(PKG)
-	cd dist && sha256sum $(BINARY)_$(VERSION)_linux_amd64 $(BINARY)_$(VERSION)_darwin_amd64 > SHA256SUMS
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o dist/$(BINARY)_$(VERSION)_darwin_arm64 $(PKG)
+	cd dist && sha256sum $(BINARY)_$(VERSION)_linux_amd64 $(BINARY)_$(VERSION)_darwin_amd64 $(BINARY)_$(VERSION)_darwin_arm64 > SHA256SUMS
 
 test:
 	go test ./...
