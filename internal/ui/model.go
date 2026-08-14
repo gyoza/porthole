@@ -24,6 +24,7 @@ const (
   esc          leave filter or close help
   tab          cycle panes
   j k ↑ ↓      move selection
+  ← →          scroll a clipped log line
   g G          top / bottom
   pgup pgdn    page
   f            follow tail
@@ -108,6 +109,7 @@ type model struct {
 	filtered []int
 	cursor   int
 	offset   int
+	logCol   int
 	follow   bool
 	paused   bool
 	eof      bool
@@ -287,6 +289,12 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "pgup", "ctrl+u":
 			m.scrollDetail(-m.layout().detRows)
 			return m, nil
+		case "left", "h":
+			m.scrollLogsH(-8)
+			return m, nil
+		case "right", "l":
+			m.scrollLogsH(8)
+			return m, nil
 		}
 	}
 
@@ -367,6 +375,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.offset = 0
 	case "G", "end":
 		m.jumpBottom()
+	case "left", "h":
+		m.scrollLogsH(-8)
+	case "right", "l":
+		m.scrollLogsH(8)
 	case "j", "down":
 		m.move(1)
 	case "k", "up":
@@ -590,6 +602,16 @@ func (m *model) refilter() {
 	}
 	m.ensureVisible()
 	m.refreshDetail()
+}
+
+func (m *model) scrollLogsH(delta int) {
+	m.logCol += delta
+	if m.logCol < 0 {
+		m.logCol = 0
+	}
+	if m.logCol > 500 {
+		m.logCol = 500
+	}
 }
 
 func (m *model) move(delta int) {

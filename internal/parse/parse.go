@@ -307,6 +307,60 @@ func flatten(m map[string]any) string {
 	return b.String()
 }
 
+// SearchPieces are independent strings the live regex is applied to.
+// JSON is not searched as one blob, so response_code.*500 cannot jump
+// from the status field into a later 500 in duration, bytes, or an id.
+func (r Record) SearchPieces() []string {
+	out := []string{r.Display, r.Level, r.Message, r.Method, r.Path, r.Host, r.Duration, r.Flags, r.Protocol, r.RequestID}
+	if r.Status > 0 {
+		st := strconv.Itoa(r.Status)
+		out = append(out,
+			st,
+			"response_code="+st,
+			`"response_code":`+st,
+			`"response_code": `+st,
+			"status="+st,
+		)
+	}
+	if r.Fields != nil {
+		collectFields(r.Fields, "", &out)
+	} else if r.Raw != "" {
+		out = append(out, r.Raw)
+	}
+	return out
+}
+
+func collectFields(m map[string]any, prefix string, out *[]string) {
+	for k, v := range m {
+		path := k
+		if prefix != "" {
+			path = prefix + "." + k
+		}
+		switch t := v.(type) {
+		case map[string]any:
+			collectFields(t, path, out)
+		case []any:
+			for _, iv := range t {
+				if nested, ok := iv.(map[string]any); ok {
+					collectFields(nested, path, out)
+				} else {
+					val := stringify(iv)
+					*out = append(*out, path, val, path+"="+val)
+				}
+			}
+		default:
+			val := stringify(t)
+			*out = append(*out,
+				path,
+				val,
+				path+"="+val,
+				`"`+path+`":`+val,
+				`"`+path+`": `+val,
+			)
+		}
+	}
+}
+
 // Pretty returns indented JSON when the line contained an object.
 func (r Record) Pretty() string {
 	if len(r.JSONBytes) == 0 {

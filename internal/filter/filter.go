@@ -36,21 +36,21 @@ func Compile(pattern string) Filter {
 }
 
 // Match reports whether the record (or source name) should be shown.
+//
+// Structured JSON is matched field-by-field (and against the compact
+// display line). That way response_code.*500 hits status 500 only, not a
+// 200 line that later contains 500 in duration, bytes, or an id.
 func (f Filter) Match(rec parse.Record, source string) bool {
 	if f.Regexp == nil {
 		return true
 	}
-	if f.Regexp.MatchString(rec.Raw) {
-		return true
-	}
-	if rec.Display != "" && f.Regexp.MatchString(rec.Display) {
-		return true
-	}
-	if rec.Flat != "" && f.Regexp.MatchString(rec.Flat) {
-		return true
-	}
 	if source != "" && f.Regexp.MatchString(source) {
 		return true
+	}
+	for _, p := range rec.SearchPieces() {
+		if p != "" && f.Regexp.MatchString(p) {
+			return true
+		}
 	}
 	return false
 }

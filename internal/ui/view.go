@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -131,7 +133,11 @@ func (m *model) logsView(ly frame) string {
 	for len(rows) < ly.logRows {
 		rows = append(rows, "")
 	}
-	return m.pane("logs", m.focus == paneLogs, ly.logW, ly.logH, strings.Join(rows, "\n"))
+	title := "logs"
+	if m.logCol > 0 {
+		title = fmt.Sprintf("logs  ← %d", m.logCol)
+	}
+	return m.pane(title, m.focus == paneLogs, ly.logW, ly.logH, strings.Join(rows, "\n"))
 }
 
 func (m *model) renderLine(ln logLine, width int, selected bool) string {
@@ -147,20 +153,27 @@ func (m *model) renderLine(ln logLine, width int, selected bool) string {
 	}
 	prefix := srcSt.Render(fmt.Sprintf("%-22s", truncate(src, 22)))
 
+	disp := skipPlainCells(ln.Rec.Display, m.logCol)
 	var body string
-	switch ln.Rec.Kind {
-	case parse.KindHTTP:
+	switch {
+	case m.logCol > 0:
+		body = base.Render(disp)
+	case ln.Rec.Kind == parse.KindHTTP:
 		body = paintHTTP(m.theme, ln.Rec, base)
-	case parse.KindApp:
+	case ln.Rec.Kind == parse.KindApp:
 		body = paintApp(m.theme, ln.Rec, base)
 	default:
-		body = base.Render(ln.Rec.Display)
+		body = base.Render(disp)
 	}
-	if m.live.Regexp != nil {
+	if re := m.live.Regexp; re != nil {
 		hi := lipgloss.NewStyle().Foreground(lipgloss.Color("#1B2838")).Background(m.theme.warn)
-		// Highlight against the already-painted line when we can; fallback to display.
-		if ln.Rec.Kind == parse.KindPlain {
-			body = highlight(ln.Rec.Display, m.live.Regexp, base, hi)
+		switch {
+		case re.MatchString(disp):
+			body = highlight(disp, re, base, hi)
+		case ln.Rec.Status > 0 && m.live.Match(ln.Rec, ln.Source):
+			if stRe, err := regexp.Compile(`\b` + strconv.Itoa(ln.Rec.Status) + `\b`); err == nil && stRe.MatchString(disp) {
+				body = highlight(disp, stRe, base, hi)
+			}
 		}
 	}
 
@@ -171,6 +184,24 @@ func (m *model) renderLine(ln logLine, width int, selected bool) string {
 		line = "  " + line
 	}
 	return truncatePlain(line, width)
+}
+
+func skipPlainCells(s string, n int) string {
+	if n <= 0 || s == "" {
+		return s
+	}
+	w := 0
+	for i, r := range s {
+		if w >= n {
+			return s[i:]
+		}
+		if r == '\t' {
+			w += 4
+		} else {
+			w++
+		}
+	}
+	return ""
 }
 
 func (m *model) sourcesView(ly frame) string {
@@ -309,7 +340,7 @@ func (m *model) filterView() string {
 }
 
 func (m *model) footerText() string {
-	return " / filter   n namespace   j/k move   f follow   p pause   d detail   s sources   e errors   ? help   q quit"
+	return " / filter   n ns   ←→ scroll   j/k move   f follow   p pause   d detail   s sources   e errors   ? help   q quit"
 }
 
 func (m *model) nsView() string {
