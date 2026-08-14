@@ -130,8 +130,8 @@ func TestFollowDoesNotStealDetailScroll(t *testing.T) {
 	m.focus = paneDetail
 	m.cursor = 0
 	m.refreshDetail()
-	m.detailOff = 3
 	held := m.cursor
+	first, _ := m.selected()
 
 	batch := make(LogBatchMsg, 0, 4)
 	for i := 0; i < 4; i++ {
@@ -147,8 +147,9 @@ func TestFollowDoesNotStealDetailScroll(t *testing.T) {
 	if m.cursor != held {
 		t.Fatalf("follow snapped cursor while detail focused: %d -> %d", held, m.cursor)
 	}
-	if m.detailOff != 3 {
-		t.Fatalf("follow reset detail scroll: %d", m.detailOff)
+	got, ok := m.selected()
+	if !ok || got.Ev.Line != first.Ev.Line {
+		t.Fatal("detail selection changed while follow ingested")
 	}
 
 	m.focus = paneLogs
