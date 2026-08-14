@@ -1,19 +1,40 @@
 # porthole
 
-Stern-style multi-pod follow, in a paneled terminal. There is no json/plain
-flag — each line is sniffed on its own.
+A Stern-style Kubernetes log tailer with a paneled terminal UI.
+
+Follow matching pods, filter with a live regex, and read JSON or ordinary
+text in the same stream. There is no format flag — each line is sniffed
+on its own.
 
 ```
-┌ porthole  ctx=Default  ns=*  5 src  42 / 1,204  ·  LIVE ─┐
-│ sources           │ logs                                 │
-│ ● envoy-eg-7f8c   │ 21:01:02  GET  /get   200  12ms      │
-│   nginx           │ 21:01:03  INFO worker tick n=18      │
-│   chatter         │ 10.1.0.4  GET  /index.html  200      │
-│                   ├ detail ──────────────────────────────┤
-│                   │ { "method": "GET", ... }             │
-├───────────────────┴──────────────────────────────────────┤
-│ / 401|5[0-9]{2}                              2 matches   │
-└──────────────────────────────────────────────────────────┘
+┌ porthole  ctx=Default  ns=*  5 src  42 / 1,204  ·  LIVE     2 errors  e ─┐
+│ sources            │ logs                                                │
+│ ● envoy-eg-7f8c    │ 21:01:02.441  GET   /get         200  12ms  example │
+│   nginx            │ 21:01:03.012  INFO  worker tick n=18                │
+│   chatter          │ 21:01:03.880  GET   /index.html  200                │
+│                    ├ json · envoy-eg-7f8c/envoy ─────────────────────────┤
+│                    │ { "method": "GET", "response_code": 200, ... }      │
+├────────────────────┴─────────────────────────────────────────────────────┤
+│ / 401|5[0-9]{2}                                              2 matches   │
+│  / filter   n namespace   j/k move   d detail   e errors   ? help  q     │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+## Install
+
+Needs Go 1.22+ and a kubeconfig (`kubectl` is enough).
+
+```bash
+go install github.com/gyoza/porthole/cmd/porthole@latest
+```
+
+From a clone:
+
+```bash
+git clone https://github.com/gyoza/porthole.git
+cd porthole
+make build
+./bin/porthole
 ```
 
 ## Usage
@@ -29,8 +50,32 @@ porthole -l app=foo -c sidecar
 porthole --since 10m --tail 500
 ```
 
-JSON (Envoy Gateway, zap, slog, prefixed `{...}`) and ordinary text (nginx
-combined, nginx error, `TS LEVEL msg`, klog, logfmt) share the same stream.
+Without a cluster:
+
+```bash
+porthole --demo                       # mixed fake JSON + plain logs
+porthole --file testdata/mixed.log
+kubectl logs -f deploy/foo | porthole
+```
+
+`--demo` and `--file` are sources, not format switches.
+
+### Flags
+
+| Flag | Meaning |
+|------|---------|
+| `-n`, `--namespace` | Kubernetes namespace (defaults to the current context) |
+| `-A`, `--all-namespaces` | Follow pods in every namespace |
+| `-l`, `--selector` | Label selector |
+| `-c`, `--container` | Container name regex |
+| `--exclude-container` | Container name regex to skip |
+| `--tail` | Lines to start with from each container (default 200) |
+| `--since` | Only logs newer than a duration (`5m`, `1h`) |
+| `--context` | kubeconfig context |
+| `--kubeconfig` | Path to kubeconfig |
+| `--demo` | Generated mixed logs, no cluster |
+| `--file` | Read a file instead of the cluster |
+| `--stdin` | Read stdin (also used automatically when piped) |
 
 ### Keys
 
@@ -38,6 +83,7 @@ combined, nginx error, `TS LEVEL msg`, klog, logfmt) share the same stream.
 |-----|--------|
 | `/` | Focus the live regex |
 | `enter` / `esc` | Leave the filter |
+| `n` | Namespace picker (always available) |
 | `j` `k` / arrows | Move the selected line |
 | `g` / `G` | Top / bottom |
 | `f` | Follow the tail |
@@ -46,19 +92,72 @@ combined, nginx error, `TS LEVEL msg`, klog, logfmt) share the same stream.
 | `s` | Toggle the source list |
 | `tab` | Cycle panes |
 | `enter` on a source | Pin the stream to that pod |
+| `e` | Open the error list |
 | `?` | Help |
 | `q` | Quit |
 
-## Install
+`n` lists `*` (all namespaces) plus cluster namespaces and any that have
+appeared in the stream. Enter selects; the view filters and the tailer
+retargets. Header shows `ns=logs` or `ns=*`.
 
-```bash
-go install github.com/gyoza/porthole/cmd/porthole@latest
+The regex is compiled as you type. A half-typed pattern keeps the last
+valid filter so the stream does not go blank.
+
+Client-go messages (throttling, watch drops) stay in a top-right badge
+(`2 errors  e`). They do not print under the TUI.
+
+## What it understands
+
+Each line is classified independently.
+
+**JSON** — a line that is `{...}` or `text prefix {...}`. Nested JSON in
+`message` / `msg` is unwrapped one level (common with collectors).
+
+| Role | Keys |
+|------|------|
+| Time | `start_time`, `ts`, `time`, `timestamp`, `@timestamp` |
+| Level | `level`, `severity`, `lvl` |
+| Message | `msg`, `message`, `error` |
+| HTTP | `method`, `x-envoy-origin-path` / `path`, `response_code` / `status`, `duration`, `:authority` / `host` |
+
+Envoy Gateway's default access log becomes:
+
+```text
+21:00:01.123  GET   /get  200  12ms  www.example.com
 ```
 
-Or from a clone: `make build` then `./bin/porthole`.
+**Plain text** — nginx combined and error logs, `TS LEVEL msg`, `[ERROR] …`,
+klog (`I0814 …]`), and logfmt (`level=error msg="…"`). Anything else stays
+as the raw line.
 
-Needs Go 1.22+ and a kubeconfig. `--demo` and `--file` are only for running
-without a cluster; they are not format switches.
+The detail pane pretty-prints JSON when the line is JSON, and shows the
+raw line otherwise.
+
+## Lab cluster
+
+Manifests under `hack/cluster/` stand up Envoy Gateway, an echo server,
+nginx, and a chatter that writes ordinary text logs:
+
+```bash
+kubectl apply -f hack/cluster/echo-gateway.yaml
+kubectl apply -f hack/cluster/plain-logs.yaml
+
+curl -H 'Host: echo.local' http://$GATEWAY_IP/
+curl -H 'Host: nginx.local' http://$GATEWAY_IP/
+
+./bin/porthole -A
+```
+
+See `hack/cluster/README.md`.
+
+## Development
+
+```bash
+make test
+make build
+make run-demo
+make run-file
+```
 
 ## License
 
