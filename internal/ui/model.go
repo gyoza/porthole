@@ -30,8 +30,8 @@ const (
   f            follow tail
   p            pause / resume ingest
                (follow does not steal detail/sources while those panes are focused)
-  d            toggle selected-line detail
-  s            toggle source list
+  d            toggle [json]/[raw] pane
+  s            toggle [sources] pane
   e            view client / tail errors
   n            choose namespace
   ?            this help
@@ -804,7 +804,7 @@ func (m *model) layout() frame {
 			f.srcW = 24
 		}
 		f.srcH = f.bodyH
-		f.srcRows = max(1, f.srcH-3)
+		f.srcRows = max(1, f.srcH-2)
 	}
 
 	rightW := f.bodyW - f.srcW
@@ -822,11 +822,11 @@ func (m *model) layout() frame {
 			f.detH = f.bodyH - 7
 		}
 		f.logH = f.bodyH - f.detH
-		f.detRows = max(1, f.detH-3)
+		f.detRows = max(1, f.detH-2)
 	} else {
 		f.logH = f.bodyH
 	}
-	f.logRows = max(1, f.logH-3)
+	f.logRows = max(1, f.logH-2)
 	return f
 }
 

@@ -47,19 +47,52 @@ func (m *model) fitLine(st lipgloss.Style, text string) string {
 	return st.Width(max(1, m.width)).MaxHeight(1).Render(truncate(text, max(1, m.width-2)))
 }
 
-func (m *model) pane(title string, active bool, w, h int, body string) string {
+func (m *model) pane(name, extra string, active bool, w, h int, body string) string {
 	if w < 2 || h < 2 {
 		return ""
 	}
 	innerW, innerH := w-2, h-2
-	content := m.theme.title(active).Render(truncate(title, max(1, innerW-2))) + "\n" + body
-	content = clipLines(content, innerH)
-	return m.theme.borderBox(active).
-		Width(innerW).
-		Height(innerH).
-		MaxWidth(w).
-		MaxHeight(h).
-		Render(content)
+	c := m.theme.border
+	if active {
+		c = m.theme.accent
+	}
+	br := lipgloss.NewStyle().Foreground(c)
+
+	topInner := "─[" + name + "]"
+	if extra != "" {
+		ex := truncate(" "+extra, max(0, innerW-lipgloss.Width(topInner)))
+		topInner += ex
+	}
+	if lipgloss.Width(topInner) > innerW {
+		topInner = truncate(topInner, innerW)
+	}
+	fill := innerW - lipgloss.Width(topInner)
+	if fill < 0 {
+		fill = 0
+	}
+	top := br.Render("╭" + topInner + strings.Repeat("─", fill) + "╮")
+
+	lines := strings.Split(clipLines(body, innerH), "\n")
+	var b strings.Builder
+	b.WriteString(top)
+	b.WriteByte('\n')
+	for _, line := range lines {
+		pad := innerW - lipgloss.Width(line)
+		if pad < 0 {
+			line = truncatePlain(line, innerW)
+			pad = innerW - lipgloss.Width(line)
+		}
+		if pad < 0 {
+			pad = 0
+		}
+		b.WriteString(br.Render("│"))
+		b.WriteString(line)
+		b.WriteString(strings.Repeat(" ", pad))
+		b.WriteString(br.Render("│"))
+		b.WriteByte('\n')
+	}
+	b.WriteString(br.Render("╰" + strings.Repeat("─", innerW) + "╯"))
+	return b.String()
 }
 
 func clipLines(s string, n int) string {
@@ -132,11 +165,11 @@ func (m *model) logsView(ly frame) string {
 	for len(rows) < ly.logRows {
 		rows = append(rows, "")
 	}
-	title := "logs"
+	extra := ""
 	if m.logCol > 0 {
-		title = fmt.Sprintf("logs  ← %d", m.logCol)
+		extra = fmt.Sprintf("←%d", m.logCol)
 	}
-	return m.pane(title, m.focus == paneLogs, ly.logW, ly.logH, strings.Join(rows, "\n"))
+	return m.pane("logs", extra, m.focus == paneLogs, ly.logW, ly.logH, strings.Join(rows, "\n"))
 }
 
 func (m *model) renderLine(ln logLine, width int, selected bool) string {
@@ -242,7 +275,7 @@ func (m *model) sourcesView(ly frame) string {
 	if start := srcWindow(m.srcSel, len(rows), ly.srcRows); start > 0 {
 		rows = rows[start:]
 	}
-	return m.pane("sources", m.focus == paneSources, ly.srcW, ly.srcH, strings.Join(rows, "\n"))
+	return m.pane("sources", "", m.focus == paneSources, ly.srcW, ly.srcH, strings.Join(rows, "\n"))
 }
 
 func srcWindow(sel, n, avail int) int {
@@ -260,13 +293,12 @@ func srcWindow(sel, n, avail int) int {
 }
 
 func (m *model) detailView(ly frame) string {
-	title := "detail"
+	name, extra := "raw", ""
 	if ln, ok := m.selected(); ok {
-		kind := "log"
 		if len(ln.Rec.JSONBytes) > 0 {
-			kind = "json"
+			name = "json"
 		}
-		title = truncate(kind+" · "+shortSource(ln.Source), max(4, ly.detW-6))
+		extra = shortSource(ln.Source)
 	}
 	rows := ly.detRows
 	start := m.detailOff
@@ -284,7 +316,7 @@ func (m *model) detailView(ly frame) string {
 	for len(body) < rows {
 		body = append(body, "")
 	}
-	return m.pane(title, m.focus == paneDetail, ly.detW, ly.detH, strings.Join(body, "\n"))
+	return m.pane(name, extra, m.focus == paneDetail, ly.detW, ly.detH, strings.Join(body, "\n"))
 }
 
 // wrapWidth hard-wraps s to width cells so the detail viewport's line

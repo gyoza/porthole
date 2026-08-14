@@ -105,8 +105,8 @@ func TestDetailClearsWhenSwitchingJSONToPlain(t *testing.T) {
 	m.cursor = len(m.filtered) - 1
 	m.refreshDetail()
 	full := m.View()
-	if strings.Count(full, "json ·") > 0 && strings.Count(full, "log ·") > 0 {
-		t.Fatalf("both json and log titles visible:\n%s", full)
+	if strings.Contains(full, "[json]") && strings.Contains(full, "[raw]") {
+		t.Fatalf("both [json] and [raw] titles visible:\n%s", full)
 	}
 	body := strings.Join(m.detailLines, "\n")
 	if strings.Contains(body, `"method"`) || strings.Contains(body, "response_code") {
@@ -251,6 +251,19 @@ func TestNamespacePickerFilters(t *testing.T) {
 	}
 	if !strings.Contains(ov, "logs") || !strings.Contains(ov, "all namespaces") {
 		t.Fatalf("picker missing items:\n%s", ov)
+	}
+}
+
+func TestPaneNamesOnBorder(t *testing.T) {
+	m := testModel(140, 40, true, true)
+	v := m.View()
+	for _, name := range []string{"[sources]", "[logs]"} {
+		if !strings.Contains(v, name) {
+			t.Fatalf("missing %s in:\n%s", name, v)
+		}
+	}
+	if !strings.Contains(v, "[json]") && !strings.Contains(v, "[raw]") {
+		t.Fatalf("missing [json]/[raw] in:\n%s", v)
 	}
 }
 
