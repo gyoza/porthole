@@ -184,6 +184,15 @@ func TestErrorsStayInBadgeNotFrame(t *testing.T) {
 	}
 }
 
+func TestPaneKeepsPaintColors(t *testing.T) {
+	m := testModel(80, 24, false, false)
+	body := "\x1b[32mGET\x1b[0m  /ok  \x1b[31m500\x1b[0m"
+	got := m.pane("logs", "", true, 40, 6, body)
+	if !strings.Contains(got, "\x1b[32mGET\x1b[0m") || !strings.Contains(got, "\x1b[31m500\x1b[0m") {
+		t.Fatalf("pane stripped log colors:\n%q", got)
+	}
+}
+
 func TestSkipANSIKeepsColor(t *testing.T) {
 	s := "\x1b[31mGET\x1b[0m  \x1b[32m/very/long/path\x1b[0m"
 	cut := skipANSICells(s, 5)

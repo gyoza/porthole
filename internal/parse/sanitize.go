@@ -10,6 +10,7 @@ import (
 // curl, awscli, and similar tools rewrite a progress bar with '\r'.
 // If that byte reaches the terminal the cursor jumps to column 0 and
 // paints over [sources]. Tabs also break lipgloss width vs the tty.
+// SGR color/style sequences (…m) are kept so [logs] paint survives.
 func Sanitize(s string) string {
 	if s == "" || !needsSanitize(s) {
 		return s
@@ -52,8 +53,14 @@ func stripControls(s string) string {
 	for i < len(s) {
 		c := s[i]
 		if c == 0x1b {
-			i = skipEscape(s, i)
-			continue
+			if j, keep := escapeSpan(s, i); keep {
+				b.WriteString(s[i:j])
+				i = j
+				continue
+			} else {
+				i = j
+				continue
+			}
 		}
 		if c < 0x20 || c == 0x7f {
 			i++
@@ -69,9 +76,11 @@ func stripControls(s string) string {
 	return b.String()
 }
 
-func skipEscape(s string, i int) int {
+// escapeSpan returns the index after the escape at i.
+// SGR color/style (CSI … m) is kept; cursor/erase/OSC is dropped.
+func escapeSpan(s string, i int) (end int, keep bool) {
 	if i+1 >= len(s) {
-		return i + 1
+		return i + 1, false
 	}
 	switch s[i+1] {
 	case '[': // CSI
@@ -80,22 +89,23 @@ func skipEscape(s string, i int) int {
 			j++
 		}
 		if j < len(s) {
+			keep = s[j] == 'm'
 			j++
 		}
-		return j
+		return j, keep
 	case ']': // OSC
 		j := i + 2
 		for j < len(s) {
 			if s[j] == 0x07 {
-				return j + 1
+				return j + 1, false
 			}
 			if s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\' {
-				return j + 2
+				return j + 2, false
 			}
 			j++
 		}
-		return j
+		return j, false
 	default:
-		return i + 2
+		return i + 2, false
 	}
 }

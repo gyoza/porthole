@@ -31,6 +31,22 @@ func TestSanitizeTabsAndCursor(t *testing.T) {
 	}
 }
 
+func TestSanitizeKeepsSGRColors(t *testing.T) {
+	in := "\x1b[32mGET\x1b[0m  \x1b[38;2;232;238;244m/ok\x1b[0m"
+	got := Sanitize(in)
+	if got != in {
+		t.Fatalf("SGR colors must stay:\n got %q\nwant %q", got, in)
+	}
+	mixed := "\x1b[32mGET\x1b[0m\x1b[K\x1b[1G /ok"
+	got = Sanitize(mixed)
+	if !strings.Contains(got, "\x1b[32mGET\x1b[0m") {
+		t.Fatalf("kept color missing: %q", got)
+	}
+	if strings.Contains(got, "[K") || strings.Contains(got, "[1G") {
+		t.Fatalf("cursor/erase should be gone: %q", got)
+	}
+}
+
 func TestLineKeepsJSONAfterCRPrefix(t *testing.T) {
 	raw := "progress...\r{\"level\":\"info\",\"msg\":\"hello\"}"
 	r := Line(raw)
