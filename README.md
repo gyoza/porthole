@@ -40,6 +40,8 @@ porthole                              # current namespace, every pod
 porthole -n envoy-gateway-system
 porthole -A                           # all namespaces
 porthole -A 'envoy.*|nginx|chatter'
+porthole -i '6ef0ac35-0794-46fe-bec6-c6d89a420a29'
+porthole -i ERROR -e healthz
 porthole -l app=foo -c sidecar
 porthole --since 10m --tail 500
 ```
@@ -62,6 +64,8 @@ kubectl logs -f deploy/foo | porthole
 | `-A`, `--all-namespaces` | Follow pods in every namespace |
 | `-l`, `--selector` | Label selector |
 | `-c`, `--container` | Container name regex |
+| `-i`, `--include` | Only show log lines matching this regex (repeatable, like Stern) |
+| `-e`, `--exclude` | Hide log lines matching this regex (repeatable, like Stern) |
 | `--exclude-container` | Container name regex to skip |
 | `--tail` | Lines to start with from each container (default 200) |
 | `--since` | Only logs newer than a duration (`5m`, `1h`) |

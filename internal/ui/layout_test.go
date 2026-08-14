@@ -254,6 +254,26 @@ func TestNamespacePickerFilters(t *testing.T) {
 	}
 }
 
+func TestIncludeSeedsLiveFilter(t *testing.T) {
+	const id = "6ef0ac35-0794-46fe-bec6-c6d89a420a29"
+	m := New(Options{Include: id}).(*model)
+	if m.input.Value() != id {
+		t.Fatalf("filter box=%q", m.input.Value())
+	}
+	hit := `{"level":"info","msg":"found","trace_id":"` + id + `"}`
+	miss := `{"level":"info","msg":"nope","trace_id":"other"}`
+	m.ingest(LogBatchMsg{
+		{Namespace: "ns", Pod: "p", Container: "c", Line: hit},
+		{Namespace: "ns", Pod: "p", Container: "c", Line: miss},
+	})
+	if len(m.filtered) != 1 {
+		t.Fatalf("filtered=%d want 1 (uuid include)", len(m.filtered))
+	}
+	if !strings.Contains(m.lines[m.filtered[0]].Ev.Line, id) {
+		t.Fatalf("kept the wrong line: %s", m.lines[m.filtered[0]].Ev.Line)
+	}
+}
+
 func TestPaneNamesOnBorder(t *testing.T) {
 	m := testModel(140, 40, true, true)
 	v := m.View()

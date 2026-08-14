@@ -324,8 +324,33 @@ func (r Record) SearchPieces() []string {
 	}
 	if r.Fields != nil {
 		collectFields(r.Fields, "", &out)
+		out = append(out, rawOutsideJSON(r)...)
 	} else if r.Raw != "" {
 		out = append(out, r.Raw)
+	}
+	return out
+}
+
+// rawOutsideJSON is the text before/after the extracted JSON object —
+// CRI prefixes, a second object, or a UUID sitting next to the blob.
+func rawOutsideJSON(r Record) []string {
+	if r.Raw == "" {
+		return nil
+	}
+	if len(r.JSONBytes) == 0 {
+		return []string{r.Raw}
+	}
+	js := string(r.JSONBytes)
+	i := strings.Index(r.Raw, js)
+	if i < 0 {
+		return []string{r.Raw}
+	}
+	var out []string
+	if i > 0 {
+		out = append(out, r.Raw[:i])
+	}
+	if end := i + len(js); end < len(r.Raw) {
+		out = append(out, r.Raw[end:])
 	}
 	return out
 }

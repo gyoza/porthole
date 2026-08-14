@@ -19,7 +19,7 @@ const (
 	maxLines = 20000
 	helpText = `porthole — windowed log tailer
 
-  /            focus live regex
+  /            focus live regex (pre-filled by -i/--include)
   enter        apply / leave filter
   esc          leave filter or close help
   tab          cycle panes
@@ -95,6 +95,10 @@ type Options struct {
 	Namespace  string
 	Query      string
 	Namespaces []string
+	// Include is the initial live regex (Stern -i/--include).
+	Include string
+	// Exclude hides matching lines (Stern -e/--exclude). Not shown in / .
+	Exclude string
 	// SwitchNS retargets the cluster tailer. Empty means all namespaces.
 	// Nil when the source is a file, stdin, or demo.
 	SwitchNS func(string)
@@ -120,9 +124,10 @@ type model struct {
 	showHelp    bool
 	focus       pane
 
-	input textinput.Model
-	live  filter.Filter
-	typed filter.Filter
+	input   textinput.Model
+	live    filter.Filter
+	typed   filter.Filter
+	exclude filter.Filter
 
 	sources []srcStat
 	srcIdx  map[string]int
@@ -153,14 +158,17 @@ func New(opts Options) tea.Model {
 	ti := textinput.New()
 	ti.Prompt = "/ "
 	ti.Placeholder = "live regex — try 5[0-9]{2} or POST|/login"
-	ti.CharLimit = 256
+	ti.CharLimit = 1024
 	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#5A6A80"))
 	ti.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#98C1D9")).Bold(true)
 	ti.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#E8EEF4"))
 	ti.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE6C4D"))
 
+	if opts.Include != "" {
+		ti.SetValue(opts.Include)
+	}
 	known := append([]string(nil), opts.Namespaces...)
-	return &model{
+	m := &model{
 		opts:        opts,
 		theme:       defaultTheme(),
 		follow:      true,
@@ -172,6 +180,13 @@ func New(opts Options) tea.Model {
 		nsKnown:     known,
 		started:     time.Now(),
 	}
+	if opts.Exclude != "" {
+		m.exclude = filter.Compile(opts.Exclude)
+	}
+	if opts.Include != "" {
+		m.applyFilter(opts.Include)
+	}
+	return m
 }
 
 func (m *model) Init() tea.Cmd {
@@ -537,7 +552,13 @@ func (m *model) keepLine(ln logLine) bool {
 	if m.nsOnly != "" && ln.Ev.Namespace != m.nsOnly {
 		return false
 	}
-	return m.live.Match(ln.Rec, ln.Source)
+	if !m.live.Match(ln.Rec, ln.Source) {
+		return false
+	}
+	if m.exclude.Regexp != nil && m.exclude.Match(ln.Rec, ln.Source) {
+		return false
+	}
+	return true
 }
 
 func (m *model) rememberNS(ns string) {
