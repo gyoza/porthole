@@ -503,9 +503,11 @@ func (m *model) ingest(batch []source.Event) {
 		}
 	}
 	if len(m.lines) > maxLines {
-		dropped := len(m.lines) - maxLines
-		m.lines = append([]logLine(nil), m.lines[dropped:]...)
-		m.rebuildSources()
+		n := len(m.lines) - maxLines
+		for _, ln := range m.lines[:n] {
+			m.dropSourceLine(ln)
+		}
+		m.lines = append([]logLine(nil), m.lines[n:]...)
 		// filtered still holds pre-trim indices; selected() would panic
 		// (index 20044 of a 20000-line ring) if refilter pinned first.
 		m.filtered = m.filtered[:0]
@@ -532,14 +534,6 @@ func (m *model) viewFollowsTail() bool {
 	return m.focus == paneLogs || m.focus == paneFilter
 }
 
-func (m *model) rebuildSources() {
-	m.sources = m.sources[:0]
-	m.srcIdx = map[string]int{}
-	for _, ln := range m.lines {
-		m.bumpSource(ln)
-	}
-}
-
 func (m *model) bumpSource(ln logLine) {
 	if i, ok := m.srcIdx[ln.Source]; ok {
 		m.sources[i].Count++
@@ -547,6 +541,19 @@ func (m *model) bumpSource(ln logLine) {
 	}
 	m.srcIdx[ln.Source] = len(m.sources)
 	m.sources = append(m.sources, srcStat{ID: ln.Source, Color: ln.Color, Count: 1})
+}
+
+// dropSourceLine decrements the in-window count when a line leaves the
+// ring. The source itself stays so [sources] does not forget a pod just
+// because noisier pods pushed its lines out.
+func (m *model) dropSourceLine(ln logLine) {
+	i, ok := m.srcIdx[ln.Source]
+	if !ok {
+		return
+	}
+	if m.sources[i].Count > 0 {
+		m.sources[i].Count--
+	}
 }
 
 func (m *model) keepLine(ln logLine) bool {

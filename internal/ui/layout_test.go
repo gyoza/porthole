@@ -351,6 +351,46 @@ func TestRingBufferDoesNotPanicOnOverflow(t *testing.T) {
 	_ = m.View()
 }
 
+func TestSourcesSurviveRingWrap(t *testing.T) {
+	m := New(Options{}).(*model)
+	m.width, m.height = 120, 40
+	quiet := source.Event{Namespace: "ns", Pod: "quiet", Container: "c", Line: "hello from quiet"}
+	m.ingest(LogBatchMsg{quiet, quiet})
+	var batch []source.Event
+	for i := 0; i < maxLines+20; i++ {
+		batch = append(batch, source.Event{
+			Namespace: "ns", Pod: "noisy", Container: "c",
+			Line: fmt.Sprintf("n %d", i),
+		})
+		if len(batch) == 64 {
+			m.ingest(batch)
+			batch = batch[:0]
+		}
+	}
+	if len(batch) > 0 {
+		m.ingest(batch)
+	}
+	ids := map[string]int{}
+	for _, s := range m.sources {
+		ids[s.ID] = s.Count
+	}
+	if _, ok := ids["ns/quiet/c"]; !ok {
+		t.Fatal("quiet pod disappeared from [sources] after the ring wrapped")
+	}
+	if ids["ns/quiet/c"] != 0 {
+		t.Fatalf("quiet in-window count=%d want 0", ids["ns/quiet/c"])
+	}
+	if ids["ns/noisy/c"] == 0 {
+		t.Fatal("noisy pod should still have lines in the ring")
+	}
+	if len(m.sources) != 2 {
+		t.Fatalf("sources=%d want 2 (insertion order, sticky): %+v", len(m.sources), m.sources)
+	}
+	if m.sources[0].ID != "ns/quiet/c" || m.sources[1].ID != "ns/noisy/c" {
+		t.Fatalf("source order shuffled: %+v", m.sources)
+	}
+}
+
 func TestPaneNamesOnBorder(t *testing.T) {
 	m := testModel(140, 40, true, true)
 	v := m.View()

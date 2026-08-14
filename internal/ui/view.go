@@ -265,6 +265,9 @@ func (m *model) sourcesView(ly frame) string {
 		}
 		label := fmt.Sprintf("%s %-16s %5d", mark, truncate(shortSource(s.ID), 16), s.Count)
 		st := lipgloss.NewStyle().Foreground(s.Color)
+		if s.Count == 0 {
+			st = m.theme.dim()
+		}
 		if i == m.srcSel && m.focus == paneSources {
 			st = st.Background(m.theme.selBg).Bold(true)
 		}
