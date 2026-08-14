@@ -312,6 +312,45 @@ func TestProgressCRDoesNotBreakSources(t *testing.T) {
 	}
 }
 
+func TestRingBufferDoesNotPanicOnOverflow(t *testing.T) {
+	m := New(Options{Include: "keep"}).(*model)
+	m.width, m.height = 120, 40
+	m.showDetail = true
+	m.follow = false
+	m.focus = paneDetail
+
+	flush := func(batch []source.Event) {
+		if len(batch) > 0 {
+			m.ingest(batch)
+		}
+	}
+	var batch []source.Event
+	for i := 0; i < maxLines+80; i++ {
+		line := "other"
+		if i%17 == 0 {
+			line = fmt.Sprintf("keep %d", i)
+		}
+		batch = append(batch, source.Event{
+			Namespace: "ns", Pod: "p", Container: "c",
+			Line: line,
+		})
+		if len(batch) == 64 {
+			flush(batch)
+			batch = batch[:0]
+		}
+	}
+	flush(batch)
+	if len(m.lines) > maxLines {
+		t.Fatalf("lines=%d want <= %d", len(m.lines), maxLines)
+	}
+	if _, ok := m.selected(); ok {
+		if m.filtered[m.cursor] >= len(m.lines) {
+			t.Fatalf("stale filter index %d len=%d", m.filtered[m.cursor], len(m.lines))
+		}
+	}
+	_ = m.View()
+}
+
 func TestPaneNamesOnBorder(t *testing.T) {
 	m := testModel(140, 40, true, true)
 	v := m.View()

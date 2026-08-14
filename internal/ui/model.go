@@ -506,6 +506,9 @@ func (m *model) ingest(batch []source.Event) {
 		dropped := len(m.lines) - maxLines
 		m.lines = append([]logLine(nil), m.lines[dropped:]...)
 		m.rebuildSources()
+		// filtered still holds pre-trim indices; selected() would panic
+		// (index 20044 of a 20000-line ring) if refilter pinned first.
+		m.filtered = m.filtered[:0]
 		m.refilter()
 	}
 	if m.viewFollowsTail() && len(m.filtered) > 0 {
@@ -725,7 +728,11 @@ func (m *model) selected() (logLine, bool) {
 	if m.cursor < 0 || m.cursor >= len(m.filtered) {
 		return logLine{}, false
 	}
-	return m.lines[m.filtered[m.cursor]], true
+	idx := m.filtered[m.cursor]
+	if idx < 0 || idx >= len(m.lines) {
+		return logLine{}, false
+	}
+	return m.lines[idx], true
 }
 
 func (m *model) refreshDetail() {
