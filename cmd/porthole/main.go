@@ -56,6 +56,8 @@ Examples:
   porthole -A 'envoy.*'
   porthole -i '6ef0ac35-0794-46fe-bec6-c6d89a420a29'
   porthole -i ERROR -e healthz
+  porthole -s5m
+  porthole -s1d
   porthole -l app=foo -c sidecar
   kubectl logs -f deploy/foo | porthole
 `,
@@ -80,7 +82,7 @@ Examples:
 	root.Flags().StringArrayVarP(&f.excludeLog, "exclude", "e", nil, "hide log lines matching this regex (repeatable)")
 	root.Flags().StringVar(&f.exclude, "exclude-container", "", "container name regex to skip")
 	root.Flags().Int64Var(&f.tail, "tail", 200, "lines to start with from each container")
-	root.Flags().DurationVar(&f.since, "since", 0, "show logs newer than a relative duration (e.g. 5m)")
+	root.Flags().VarP(newSinceValue(&f.since), "since", "s", "show logs newer than a relative duration (5s, 5m, 1h, 1d)")
 	root.Flags().StringVar(&f.context, "context", "", "kubeconfig context")
 	root.Flags().StringVar(&f.kubeconfig, "kubeconfig", "", "path to kubeconfig")
 	root.Flags().BoolVar(&f.demo, "demo", false, "stream mixed fake logs (JSON + plain) without a cluster")
