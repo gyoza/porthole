@@ -2,8 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -154,24 +152,19 @@ func (m *model) renderLine(ln logLine, width int, selected bool) string {
 	}
 	prefix := srcSt.Render(fmt.Sprintf("%-22s", truncate(src, 22)))
 
+	re := m.live.Regexp
 	var body string
 	switch ln.Rec.Kind {
 	case parse.KindHTTP:
-		body = paintHTTP(m.theme, ln.Rec, base)
+		body = paintHTTP(m.theme, ln.Rec, base, re, m.theme.warn)
 	case parse.KindApp:
-		body = paintApp(m.theme, ln.Rec, base)
+		body = paintApp(m.theme, ln.Rec, base, re, m.theme.warn)
 	default:
-		body = base.Render(ln.Rec.Display)
-	}
-	if re := m.live.Regexp; re != nil {
-		hi := lipgloss.NewStyle().Foreground(lipgloss.Color("#1B2838")).Background(m.theme.warn)
-		switch {
-		case re.MatchString(ln.Rec.Display):
+		if re != nil && re.MatchString(ln.Rec.Display) {
+			hi := base.Background(m.theme.warn)
 			body = highlight(ln.Rec.Display, re, base, hi)
-		case ln.Rec.Status > 0 && m.live.Match(ln.Rec, ln.Source):
-			if stRe, err := regexp.Compile(`\b` + strconv.Itoa(ln.Rec.Status) + `\b`); err == nil && stRe.MatchString(ln.Rec.Display) {
-				body = highlight(ln.Rec.Display, stRe, base, hi)
-			}
+		} else {
+			body = base.Render(ln.Rec.Display)
 		}
 	}
 	if m.logCol > 0 {

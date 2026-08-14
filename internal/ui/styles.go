@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -161,44 +162,69 @@ func highlight(s string, re interface{ FindAllStringIndex(string, int) [][]int }
 	return b.String()
 }
 
-func paintHTTP(t theme, rec parse.Record, base lipgloss.Style) string {
+// paintSeg keeps the field color and, if re hits this field (or a JSON
+// alias like response_code=500), only the match gets a highlight background.
+func paintSeg(plain string, st lipgloss.Style, re *regexp.Regexp, hiBg lipgloss.Color, aliases ...string) string {
+	if re == nil || plain == "" {
+		return st.Render(plain)
+	}
+	hi := st.Background(hiBg)
+	if idxs := re.FindAllStringIndex(plain, -1); len(idxs) > 0 {
+		return highlight(plain, re, st, hi)
+	}
+	for _, a := range aliases {
+		if a == "" {
+			continue
+		}
+		if re.MatchString(a) || re.MatchString(a+"="+plain) ||
+			re.MatchString(`"`+a+`":`+plain) || re.MatchString(`"`+a+`": `+plain) {
+			return hi.Render(plain)
+		}
+	}
+	return st.Render(plain)
+}
+
+func paintHTTP(t theme, rec parse.Record, base lipgloss.Style, re *regexp.Regexp, hiBg lipgloss.Color) string {
 	parts := make([]string, 0, 8)
 	if !rec.Timestamp.IsZero() {
-		parts = append(parts, t.dim().Render(rec.Timestamp.Format("15:04:05.000")))
+		ts := rec.Timestamp.Format("15:04:05.000")
+		parts = append(parts, paintSeg(ts, t.dim(), re, hiBg, "start_time", "ts", "time"))
 	}
 	if rec.Method != "" {
-		parts = append(parts, t.methodColor(rec.Method).Render(pad(rec.Method, 6)))
+		parts = append(parts, paintSeg(pad(rec.Method, 6), t.methodColor(rec.Method), re, hiBg, "method"))
 	}
 	if rec.Path != "" {
-		parts = append(parts, base.Render(rec.Path))
+		parts = append(parts, paintSeg(rec.Path, base, re, hiBg, "path", "x-envoy-origin-path"))
 	}
 	if rec.Status > 0 {
-		parts = append(parts, t.statusColor(rec.Status).Render(itoa(rec.Status)))
+		st := itoa(rec.Status)
+		parts = append(parts, paintSeg(st, t.statusColor(rec.Status), re, hiBg, "response_code", "status"))
 	}
 	if rec.Duration != "" {
-		parts = append(parts, t.dim().Render(rec.Duration))
+		parts = append(parts, paintSeg(rec.Duration, t.dim(), re, hiBg, "duration"))
 	}
 	if rec.Host != "" {
-		parts = append(parts, t.dim().Render(rec.Host))
+		parts = append(parts, paintSeg(rec.Host, t.dim(), re, hiBg, ":authority", "host"))
 	}
 	if rec.Flags != "" && rec.Flags != "-" {
-		parts = append(parts, lipgloss.NewStyle().Foreground(t.warn).Render(rec.Flags))
+		parts = append(parts, paintSeg(rec.Flags, lipgloss.NewStyle().Foreground(t.warn), re, hiBg, "response_flags"))
 	}
 	return strings.Join(parts, "  ")
 }
 
-func paintApp(t theme, rec parse.Record, base lipgloss.Style) string {
+func paintApp(t theme, rec parse.Record, base lipgloss.Style, re *regexp.Regexp, hiBg lipgloss.Color) string {
 	parts := make([]string, 0, 6)
 	if !rec.Timestamp.IsZero() {
-		parts = append(parts, t.dim().Render(rec.Timestamp.Format("15:04:05.000")))
+		ts := rec.Timestamp.Format("15:04:05.000")
+		parts = append(parts, paintSeg(ts, t.dim(), re, hiBg, "ts", "time"))
 	}
 	if rec.Level != "" {
-		parts = append(parts, t.levelColor(rec.Level).Render(pad(rec.Level, 5)))
+		parts = append(parts, paintSeg(pad(rec.Level, 5), t.levelColor(rec.Level), re, hiBg, "level"))
 	}
 	if rec.Message != "" {
-		parts = append(parts, base.Render(rec.Message))
+		parts = append(parts, paintSeg(rec.Message, base, re, hiBg, "msg", "message"))
 	} else {
-		parts = append(parts, base.Render(rec.Display))
+		parts = append(parts, paintSeg(rec.Display, base, re, hiBg))
 	}
 	return strings.Join(parts, "  ")
 }
