@@ -1,0 +1,9 @@
+{"start_time":"2026-08-13T21:00:01.123Z","method":"GET","x-envoy-origin-path":"/get","protocol":"HTTP/1.1","response_code":200,"response_flags":"-","response_code_details":"via_upstream","bytes_received":0,"bytes_sent":1234,"duration":12,"x-envoy-upstream-service-time":"8",":authority":"www.example.com","upstream_host":"10.1.0.5:8080"}
+{"level":"info","ts":"2026-08-13T21:00:01.200Z","logger":"infrastructure","msg":"reconciling gateway","gateway":"default/eg"}
+[2026-08-13T21:00:01.250Z] {"level":"debug","msg":"pushed snapshot","node":"envoy-eg","resources":4}
+{"level":"warn","ts":"2026-08-13T21:00:02.000Z","logger":"provider","msg":"endpoint not yet ready","service":"backend"}
+{"start_time":"2026-08-13T21:00:02.400Z","method":"POST","x-envoy-origin-path":"/oauth2/token","protocol":"HTTP/1.1","response_code":401,"response_flags":"-","response_code_details":"denied","duration":4,":authority":"auth.example.com"}
+{"message":"{\"method\":\"PUT\",\"path\":\"/api/v1/users/42\",\"status\":500}","ts":"2026-08-13T21:00:03.000Z"}
+plain text from a sidecar that does not speak json
+{"level":"error","ts":"2026-08-13T21:00:04.000Z","logger":"gatewayapi","msg":"httproute reference grant missing","httproute":"default/api"}
+{"start_time":"2026-08-13T21:00:04.880Z","method":"GET","x-envoy-origin-path":"/api/v1/orders","response_code":502,"response_flags":"URX","response_code_details":"upstream_reset","duration":210,":authority":"api.internal"}

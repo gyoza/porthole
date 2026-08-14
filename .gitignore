@@ -1,0 +1,11 @@
+/bin/
+/dist/
+/porthole
+*.exe
+*.test
+*.out
+debug.log
+.idea/
+.vscode/
+*.swp
+.DS_Store
