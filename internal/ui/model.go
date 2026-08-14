@@ -811,6 +811,8 @@ func (m *model) headerText() string {
 		bits = append(bits, "PAUSED")
 	case m.eof:
 		bits = append(bits, "EOF")
+	case m.follow:
+		bits = append(bits, "LIVE (Following)")
 	default:
 		bits = append(bits, "LIVE")
 	}
