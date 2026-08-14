@@ -6,19 +6,11 @@ Follow matching pods, filter with a live regex, and read JSON or ordinary
 text in the same stream. There is no format flag — each line is sniffed
 on its own.
 
-```
-┌ porthole  ctx=Default  ns=*  5 src  42 / 1,204  ·  LIVE     2 errors  e ─┐
-│ sources            │ logs                                                │
-│ ● envoy-eg-7f8c    │ 21:01:02.441  GET   /get         200  12ms  example │
-│   nginx            │ 21:01:03.012  INFO  worker tick n=18                │
-│   chatter          │ 21:01:03.880  GET   /index.html  200                │
-│                    ├ json · envoy-eg-7f8c/envoy ─────────────────────────┤
-│                    │ { "method": "GET", "response_code": 200, ... }      │
-├────────────────────┴─────────────────────────────────────────────────────┤
-│ / 401|5[0-9]{2}                                              2 matches   │
-│  / filter   n namespace   j/k move   d detail   e errors   ? help  q     │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+
+
+https://github.com/user-attachments/assets/6f556266-43aa-4b78-a2b3-43a0dc51ccc5
+
+
 
 ## Install
 
