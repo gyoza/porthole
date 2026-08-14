@@ -11,8 +11,9 @@ on its own.
 ## Install
 
 Needs Go 1.22+. Cluster tailing uses the Kubernetes API directly (client-go)
-and only needs a kubeconfig — typically `~/.kube/config`. The `kubectl`
-binary is not required. `--demo` and `--file` work with no cluster at all.
+and only needs a working kubeconfig `~/.kube/config`. 
+
+Switches `--demo` and `--file` work with no cluster at all.
 
 ```bash
 go install github.com/gyoza/porthole/cmd/porthole@latest
