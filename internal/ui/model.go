@@ -29,6 +29,7 @@ const (
   pgup pgdn    page
   f            follow tail
   p            pause / resume ingest
+               (follow does not steal detail/sources while those panes are focused)
   d            toggle selected-line detail
   s            toggle source list
   e            view client / tail errors
@@ -419,14 +420,30 @@ func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// ignore
 	}
 	if msg.Button == tea.MouseButtonWheelUp {
-		m.move(-3)
-		m.refreshDetail()
+		m.wheel(-3)
 	}
 	if msg.Button == tea.MouseButtonWheelDown {
-		m.move(3)
-		m.refreshDetail()
+		m.wheel(3)
 	}
 	return m, nil
+}
+
+func (m *model) wheel(delta int) {
+	switch m.focus {
+	case paneDetail:
+		m.scrollDetail(delta)
+	case paneSources:
+		m.srcSel += delta
+		if m.srcSel < 0 {
+			m.srcSel = 0
+		}
+		if m.srcSel >= len(m.sources) {
+			m.srcSel = len(m.sources) - 1
+		}
+	default:
+		m.move(delta)
+		m.refreshDetail()
+	}
 }
 
 func (m *model) cyclePane(dir int) {
@@ -475,11 +492,25 @@ func (m *model) ingest(batch []source.Event) {
 		m.rebuildSources()
 		m.refilter()
 	}
-	if m.follow && len(m.filtered) > 0 {
+	if m.viewFollowsTail() && len(m.filtered) > 0 {
 		m.cursor = len(m.filtered) - 1
 		m.ensureVisible()
 	}
 	m.refreshDetail()
+}
+
+// viewFollowsTail reports whether ingest should snap the log cursor (and
+// thus the detail pane) to the newest line. Following still appends
+// lines; only the live log list is pinned to the tail. Detail, sources,
+// and overlays keep their selection so they stay scrollable.
+func (m *model) viewFollowsTail() bool {
+	if !m.follow || m.paused {
+		return false
+	}
+	if m.showHelp || m.showErrs || m.showNS {
+		return false
+	}
+	return m.focus == paneLogs || m.focus == paneFilter
 }
 
 func (m *model) rebuildSources() {
@@ -585,14 +616,29 @@ func (m *model) applyFilter(pattern string) {
 }
 
 func (m *model) refilter() {
+	pin := ""
+	if !m.viewFollowsTail() {
+		if ln, ok := m.selected(); ok {
+			pin = ln.Source + "\x00" + ln.Ev.Line
+		}
+	}
 	m.filtered = m.filtered[:0]
 	for i, ln := range m.lines {
 		if m.keepLine(ln) {
 			m.filtered = append(m.filtered, i)
 		}
 	}
-	if m.follow && len(m.filtered) > 0 {
+	if m.viewFollowsTail() && len(m.filtered) > 0 {
 		m.cursor = len(m.filtered) - 1
+	} else if pin != "" {
+		m.cursor = 0
+		for i, idx := range m.filtered {
+			ln := m.lines[idx]
+			if ln.Source+"\x00"+ln.Ev.Line == pin {
+				m.cursor = i
+				break
+			}
+		}
 	}
 	if m.cursor >= len(m.filtered) {
 		m.cursor = len(m.filtered) - 1

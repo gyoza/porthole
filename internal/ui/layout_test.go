@@ -123,6 +123,41 @@ func TestDetailClearsWhenSwitchingJSONToPlain(t *testing.T) {
 	}
 }
 
+func TestFollowDoesNotStealDetailScroll(t *testing.T) {
+	m := testModel(140, 40, true, true)
+	m.follow = true
+	m.paused = false
+	m.focus = paneDetail
+	m.cursor = 0
+	m.refreshDetail()
+	m.detailOff = 3
+	held := m.cursor
+
+	batch := make(LogBatchMsg, 0, 4)
+	for i := 0; i < 4; i++ {
+		line := fmt.Sprintf(`{"method":"GET","x-envoy-origin-path":"/n/%d","response_code":200}`, i)
+		batch = append(batch, source.Event{
+			Namespace: "echo",
+			Pod:       "echo-new",
+			Container: "echo",
+			Line:      line,
+		})
+	}
+	m.ingest(batch)
+	if m.cursor != held {
+		t.Fatalf("follow snapped cursor while detail focused: %d -> %d", held, m.cursor)
+	}
+	if m.detailOff != 3 {
+		t.Fatalf("follow reset detail scroll: %d", m.detailOff)
+	}
+
+	m.focus = paneLogs
+	m.ingest(batch)
+	if m.cursor != len(m.filtered)-1 {
+		t.Fatalf("log focus should still follow: cursor=%d last=%d", m.cursor, len(m.filtered)-1)
+	}
+}
+
 func TestErrorsStayInBadgeNotFrame(t *testing.T) {
 	m := testModel(140, 40, true, true)
 	before := m.View()
