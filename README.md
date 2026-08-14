@@ -6,11 +6,7 @@ Follow matching pods, filter with a live regex, and read JSON or ordinary
 text in the same stream. There is no format flag — each line is sniffed
 on its own.
 
-
-
-https://github.com/user-attachments/assets/6f556266-43aa-4b78-a2b3-43a0dc51ccc5
-
-
+<img width="890" height="557" alt="porthole" src="https://github.com/user-attachments/assets/9c0f034e-f4bb-4a69-a4ac-a89830f9fc21" />
 
 ## Install
 
