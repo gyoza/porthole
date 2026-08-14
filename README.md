@@ -15,6 +15,9 @@ and only needs a working kubeconfig `~/.kube/config`.
 
 Switches `--demo` and `--file` work with no cluster at all.
 
+Linux and macOS x86-64 binaries are on the
+[Releases](https://github.com/gyoza/porthole/releases) page.
+
 ```bash
 go install github.com/gyoza/porthole/cmd/porthole@latest
 ```

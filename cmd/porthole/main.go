@@ -17,7 +17,7 @@ import (
 	"github.com/gyoza/porthole/internal/ui"
 )
 
-const version = "0.1.0"
+var version = "0.0.1"
 
 type flags struct {
 	namespace  string
