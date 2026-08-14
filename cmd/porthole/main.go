@@ -33,6 +33,10 @@ type flags struct {
 	context    string
 	kubeconfig string
 	demo       bool
+	demoPods   int
+	demoRate   int
+	demoQuiet  int
+	demoProg   int
 	file       string
 	stdin      bool
 }
@@ -59,6 +63,7 @@ Examples:
   porthole -s5m
   porthole -s1d
   porthole -l app=foo -c sidecar
+  porthole --demo --demo-pods 80 --demo-rate 2000
   kubectl logs -f deploy/foo | porthole
 `,
 		Args:    cobra.MaximumNArgs(1),
@@ -86,6 +91,10 @@ Examples:
 	root.Flags().StringVar(&f.context, "context", "", "kubeconfig context")
 	root.Flags().StringVar(&f.kubeconfig, "kubeconfig", "", "path to kubeconfig")
 	root.Flags().BoolVar(&f.demo, "demo", false, "stream mixed fake logs (JSON + plain) without a cluster")
+	root.Flags().IntVar(&f.demoPods, "demo-pods", 0, "unique pods for --demo (default 5)")
+	root.Flags().IntVar(&f.demoRate, "demo-rate", 0, "lines per second for --demo (default 12)")
+	root.Flags().IntVar(&f.demoQuiet, "demo-quiet", 0, "of those pods, emit rarely (stay in [sources] after the ring wraps)")
+	root.Flags().IntVar(&f.demoProg, "demo-progress", 0, "pods that emit curl/awscli \\r progress lines")
 	root.Flags().StringVar(&f.file, "file", "", "read a log file instead of the cluster")
 	root.Flags().BoolVar(&f.stdin, "stdin", false, "read log lines from stdin")
 
@@ -117,12 +126,23 @@ func run(f flags, query string) error {
 	}
 	opts := ui.Options{Query: query, Include: inc.Pattern, Exclude: exc.Pattern}
 
+	if f.demoPods > 0 || f.demoRate > 0 || f.demoQuiet > 0 || f.demoProg > 0 {
+		f.demo = true
+	}
+
 	switch {
 	case f.demo:
-		opts.Title = "demo"
+		dc := source.DemoConfig{Pods: f.demoPods, Rate: f.demoRate, Quiet: f.demoQuiet, Progress: f.demoProg}
+		if dc.Pods == 0 {
+			dc.Pods = 5
+		}
+		if dc.Rate == 0 {
+			dc.Rate = 12
+		}
+		opts.Title = fmt.Sprintf("demo %d pods · %d/s", dc.Pods, dc.Rate)
 		go func() {
 			defer close(events)
-			if err := source.Demo(ctx, events); err != nil && ctx.Err() == nil {
+			if err := source.DemoWith(ctx, dc, events); err != nil && ctx.Err() == nil {
 				fmt.Fprintln(os.Stderr, err)
 			}
 		}()

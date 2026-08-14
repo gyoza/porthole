@@ -52,8 +52,20 @@ Without a cluster:
 
 ```bash
 porthole --demo                       # mixed fake JSON + plain logs
+porthole --demo --demo-pods 80 --demo-rate 2000 --demo-quiet 10 --demo-progress 2
 porthole --file testdata/mixed.log
 kubectl logs -f deploy/foo | porthole
+```
+
+`make run-load` is the same 80-pod / 2000 lines-per-second stream. Quiet pods should stay in `[sources]` after the 20k-line ring wraps; progress pods emit curl/awscli `\r` lines.
+
+On a cluster (current kube context):
+
+```bash
+make load-cluster
+./bin/porthole -n noise
+kubectl -n noise scale deploy/noisy --replicas=40
+make unload-cluster
 ```
 
 `--demo` and `--file` are sources, not format switches.
@@ -74,6 +86,10 @@ kubectl logs -f deploy/foo | porthole
 | `--context` | kubeconfig context |
 | `--kubeconfig` | Path to kubeconfig |
 | `--demo` | Generated mixed logs, no cluster |
+| `--demo-pods` | Unique pods in `--demo` (default 5) |
+| `--demo-rate` | Lines per second in `--demo` (default 12) |
+| `--demo-quiet` | Of those pods, emit rarely |
+| `--demo-progress` | Pods that emit curl/awscli `\r` progress |
 | `--file` | Read a file instead of the cluster |
 | `--stdin` | Read stdin (also used automatically when piped) |
 
