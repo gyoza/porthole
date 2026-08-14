@@ -15,12 +15,14 @@ import (
 )
 
 // Event is one log line from a named origin.
+// If Err is set, this is a status/error notice, not a log line.
 type Event struct {
 	Time      time.Time
 	Namespace string
 	Pod       string
 	Container string
 	Line      string
+	Err       string
 }
 
 // SourceID is the short "ns/pod/container" label used in the TUI.
@@ -104,13 +106,16 @@ func OpenFile(path string) (*os.File, error) {
 	return f, nil
 }
 
-// Demo emits realistic Envoy Gateway / app JSON logs forever.
+// Demo emits a mixed stream the way a real cluster does: Envoy JSON,
+// controller JSON, nginx combined/error, and plain INFO/ERROR lines.
 func Demo(ctx context.Context, out chan<- Event) error {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	sources := []Event{
 		{Namespace: "envoy-gateway-system", Pod: "envoy-eg-7f8c9d", Container: "envoy"},
 		{Namespace: "envoy-gateway-system", Pod: "envoy-eg-2a1b4c", Container: "envoy"},
 		{Namespace: "envoy-gateway-system", Pod: "envoy-gateway-0", Container: "envoy-gateway"},
+		{Namespace: "logs", Pod: "nginx-6d5c8956f4", Container: "nginx"},
+		{Namespace: "logs", Pod: "chatter-796db96c68", Container: "chatter"},
 	}
 	paths := []string{
 		"/get", "/login", "/api/v1/users", "/api/v1/orders",
@@ -139,15 +144,21 @@ func Demo(ctx context.Context, out chan<- Event) error {
 
 			ctrlEvery++
 			var ev Event
-			if ctrlEvery%9 == 0 {
+			switch ctrlEvery % 10 {
+			case 0:
 				ev = sources[2]
-				ev.Time = now
 				ev.Line = controllerLine(now, rng)
-			} else {
+			case 1, 2:
+				ev = sources[3]
+				ev.Line = nginxLine(now, rng, paths)
+			case 3, 4:
+				ev = sources[4]
+				ev.Line = chatterLine(now, rng)
+			default:
 				ev = sources[rng.Intn(2)]
-				ev.Time = now
 				ev.Line = accessLine(now, rng, methods, statuses, paths, hosts)
 			}
+			ev.Time = now
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -239,4 +250,32 @@ func controllerLine(now time.Time, rng *rand.Rand) string {
 		`{"level":"error","ts":"%s","logger":"gatewayapi","msg":"httproute reference grant missing","httproute":"default/api","backendRef":"other/svc"}`,
 	}
 	return fmt.Sprintf(msgs[rng.Intn(len(msgs))], now.UTC().Format(time.RFC3339Nano))
+}
+
+func nginxLine(now time.Time, rng *rand.Rand, paths []string) string {
+	path := paths[rng.Intn(len(paths))]
+	status := 200
+	if rng.Intn(10) == 0 {
+		status = 404
+		return fmt.Sprintf(`%s [error] 32#32: *%d open() "/usr/share/nginx/html%s" failed (2: No such file or directory), client: 10.1.0.%d, server: localhost, request: "GET %s HTTP/1.1", host: "nginx.local"`,
+			now.UTC().Format("2006/01/02 15:04:05"), rng.Intn(90)+1, path, rng.Intn(250)+1, path)
+	}
+	return fmt.Sprintf(`10.1.0.%d - - [%s] "GET %s HTTP/1.1" %d %d "-" "curl/8.5.0" "-"`,
+		rng.Intn(250)+1, now.UTC().Format("02/Jan/2006:15:04:05 +0000"), path, status, 200+rng.Intn(800))
+}
+
+func chatterLine(now time.Time, rng *rand.Rand) string {
+	ts := now.UTC().Format(time.RFC3339)
+	switch rng.Intn(5) {
+	case 0:
+		return fmt.Sprintf("%s INFO  worker tick n=%d", ts, rng.Intn(500))
+	case 1:
+		return fmt.Sprintf("%s WARN  cache miss key=user:%d", ts, rng.Intn(80))
+	case 2:
+		return fmt.Sprintf("[ERROR] failed to frobnicate widget id=%d", rng.Intn(80))
+	case 3:
+		return fmt.Sprintf("I0814 %s.000001       1 main.go:40] starting workers n=%d", now.UTC().Format("15:04:05"), rng.Intn(80))
+	default:
+		return fmt.Sprintf(`ts=%s level=error msg="upstream timeout" method=GET path=/api/orders status=504`, ts)
+	}
 }

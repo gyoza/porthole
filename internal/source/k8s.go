@@ -52,9 +52,20 @@ func BuildClient(opts KubeOptions) (*kubernetes.Clientset, string, error) {
 			return nil, "", fmt.Errorf("kubeconfig: %w", err)
 		}
 	}
-	// Don't sit forever on a dead API server.
-	if restCfg.Timeout == 0 {
-		restCfg.Timeout = 15 * time.Second
+	// rest.Config.Timeout is http.Client.Timeout — it applies to the entire
+	// request, including Watch and log Follow streams. A 15s cap here is what
+	// produced "tail failed: pod watch closed" after the first burst of logs.
+	// Leave it at zero so follow/watch can stay open; list still uses a
+	// per-call context deadline below.
+	restCfg.Timeout = 0
+	// Following many pods at once (porthole -A) exceeds client-go's default
+	// 5 QPS / 10 burst and prints "client-side throttling" to the terminal,
+	// which wrecks the TUI. Give the tailer enough headroom.
+	if restCfg.QPS < 50 {
+		restCfg.QPS = 50
+	}
+	if restCfg.Burst < 100 {
+		restCfg.Burst = 100
 	}
 
 	cs, err := kubernetes.NewForConfig(restCfg)
@@ -89,19 +100,30 @@ func CurrentContext(kubeconfig, override string) string {
 	return raw.CurrentContext
 }
 
+// ListNamespaces returns cluster namespace names, sorted.
+func ListNamespaces(ctx context.Context, cs kubernetes.Interface) []string {
+	list, err := cs.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(list.Items))
+	for i := range list.Items {
+		if n := list.Items[i].Name; n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // TailPods watches matching pods and follows container logs.
+// It only returns when ctx is cancelled, or the first list/watch cannot start.
+// A dropped watch is reconnected instead of aborting the tailer.
 func TailPods(ctx context.Context, cs kubernetes.Interface, ns string, opts KubeOptions, out chan<- Event) error {
 	if opts.PodQuery == nil {
 		opts.PodQuery = regexp.MustCompile(".*")
 	}
 	if opts.TailLines <= 0 {
 		opts.TailLines = 200
-	}
-
-	listOpts := metav1.ListOptions{LabelSelector: opts.Selector}
-	pods, err := cs.CoreV1().Pods(ns).List(ctx, listOpts)
-	if err != nil {
-		return fmt.Errorf("list pods: %w", err)
 	}
 
 	var mu sync.Mutex
@@ -150,25 +172,73 @@ func TailPods(ctx context.Context, cs kubernetes.Interface, ns string, opts Kube
 		}
 	}
 
-	for i := range pods.Items {
-		p := pods.Items[i]
-		syncPod(&p)
-	}
+	listOpts := metav1.ListOptions{LabelSelector: opts.Selector}
+	first := true
+	backoff := time.Second
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 
-	listOpts.ResourceVersion = pods.ResourceVersion
-	w, err := cs.CoreV1().Pods(ns).Watch(ctx, listOpts)
-	if err != nil {
-		return fmt.Errorf("watch pods: %w", err)
-	}
-	defer w.Stop()
+		lctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		pods, err := cs.CoreV1().Pods(ns).List(lctx, listOpts)
+		cancel()
+		if err != nil {
+			if first {
+				return fmt.Errorf("list pods: %w", err)
+			}
+			emitErr(ctx, out, "porthole", "list pods", err)
+			if !sleepCtx(ctx, backoff) {
+				return ctx.Err()
+			}
+			backoff = nextBackoff(backoff)
+			continue
+		}
+		first = false
+		backoff = time.Second
 
+		for i := range pods.Items {
+			p := pods.Items[i]
+			syncPod(&p)
+		}
+
+		wopts := listOpts
+		wopts.ResourceVersion = pods.ResourceVersion
+		wopts.AllowWatchBookmarks = true
+		w, err := cs.CoreV1().Pods(ns).Watch(ctx, wopts)
+		if err != nil {
+			emitErr(ctx, out, "porthole", "watch pods", err)
+			if !sleepCtx(ctx, backoff) {
+				return ctx.Err()
+			}
+			backoff = nextBackoff(backoff)
+			continue
+		}
+
+		alive := consumeWatch(ctx, w, syncPod, dropPod)
+		w.Stop()
+		if !alive {
+			return ctx.Err()
+		}
+		emitErr(ctx, out, "porthole", "watch", fmt.Errorf("pod watch closed; reconnecting"))
+		if !sleepCtx(ctx, backoff) {
+			return ctx.Err()
+		}
+		backoff = nextBackoff(backoff)
+	}
+}
+
+func consumeWatch(ctx context.Context, w watch.Interface, syncPod, dropPod func(*corev1.Pod)) bool {
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return false
 		case ev, ok := <-w.ResultChan():
 			if !ok {
-				return fmt.Errorf("pod watch closed")
+				return true
+			}
+			if ev.Type == watch.Error || ev.Type == watch.Bookmark {
+				continue
 			}
 			pod, ok := ev.Object.(*corev1.Pod)
 			if !ok {
@@ -195,34 +265,56 @@ func containerWanted(name string, opts KubeOptions) bool {
 }
 
 func followContainer(ctx context.Context, cs kubernetes.Interface, ns, pod, container string, opts KubeOptions, out chan<- Event) {
-	logOpts := &corev1.PodLogOptions{
-		Container:  container,
-		Follow:     true,
-		Timestamps: opts.Timestamps,
-		TailLines:  &opts.TailLines,
-	}
-	if opts.Since > 0 {
-		sec := int64(opts.Since.Seconds())
-		if sec < 1 {
-			sec = 1
+	tail := opts.TailLines
+	since := opts.Since
+	backoff := time.Second
+	for {
+		if ctx.Err() != nil {
+			return
 		}
-		logOpts.SinceSeconds = &sec
-	}
+		logOpts := &corev1.PodLogOptions{
+			Container:  container,
+			Follow:     true,
+			Timestamps: opts.Timestamps,
+		}
+		if tail > 0 {
+			t := tail
+			logOpts.TailLines = &t
+		}
+		if since > 0 {
+			sec := int64(since.Seconds())
+			if sec < 1 {
+				sec = 1
+			}
+			logOpts.SinceSeconds = &sec
+		}
 
-	req := cs.CoreV1().Pods(ns).GetLogs(pod, logOpts)
-	stream, err := req.Stream(ctx)
-	if err != nil {
-		select {
-		case <-ctx.Done():
-		case out <- Event{
-			Time:      time.Now(),
-			Namespace: ns,
-			Pod:       pod,
-			Container: container,
-			Line:      fmt.Sprintf(`{"level":"error","msg":"failed to stream logs","error":%q}`, err.Error()),
-		}:
+		opened, err := streamLogs(ctx, cs, ns, pod, container, logOpts, out)
+		if ctx.Err() != nil {
+			return
 		}
-		return
+		if opened {
+			// Reconnect should not replay the last --tail window.
+			tail = 0
+			since = 0
+			backoff = time.Second
+		}
+		if err != nil {
+			emitErr(ctx, out, ns+"/"+pod+"/"+container, "stream logs", err)
+		}
+		if !sleepCtx(ctx, backoff) {
+			return
+		}
+		if !opened {
+			backoff = nextBackoff(backoff)
+		}
+	}
+}
+
+func streamLogs(ctx context.Context, cs kubernetes.Interface, ns, pod, container string, logOpts *corev1.PodLogOptions, out chan<- Event) (bool, error) {
+	stream, err := cs.CoreV1().Pods(ns).GetLogs(pod, logOpts).Stream(ctx)
+	if err != nil {
+		return false, err
 	}
 	defer stream.Close()
 
@@ -239,8 +331,59 @@ func followContainer(ctx context.Context, cs kubernetes.Interface, ns, pod, cont
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return true, ctx.Err()
 		case out <- ev:
 		}
 	}
+	return true, sc.Err()
+}
+
+func emitErr(ctx context.Context, out chan<- Event, src, msg string, err error) {
+	if err == nil || ctx.Err() != nil {
+		return
+	}
+	ev := Event{
+		Time: time.Now(),
+		Pod:  src,
+		Err:  msg + ": " + err.Error(),
+	}
+	if parts := splitSrc(src); len(parts) == 3 {
+		ev.Namespace, ev.Pod, ev.Container = parts[0], parts[1], parts[2]
+	}
+	select {
+	case <-ctx.Done():
+	case out <- ev:
+	}
+}
+
+func splitSrc(s string) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '/' {
+			out = append(out, s[start:i])
+			start = i + 1
+		}
+	}
+	out = append(out, s[start:])
+	return out
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+func nextBackoff(d time.Duration) time.Duration {
+	d *= 2
+	if d > 15*time.Second {
+		return 15 * time.Second
+	}
+	return d
 }

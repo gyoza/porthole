@@ -2,11 +2,11 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -28,15 +28,17 @@ const (
   pgup pgdn    page
   f            follow tail
   p            pause / resume ingest
-  d            toggle JSON detail
+  d            toggle selected-line detail
   s            toggle source list
+  e            view client / tail errors
+  n            choose namespace
   ?            this help
   q            quit
 
 Regex is compiled as you type. An incomplete pattern
 keeps the last valid filter so the stream stays visible.
-JSON from Envoy Gateway, zap, slog, and friends is
-detected automatically (including a text prefix).`
+JSON vs plain text is detected per line. There is no format flag.
+Kubernetes client errors stay in the top-right badge, not the log stream.`
 )
 
 type pane int
@@ -57,6 +59,20 @@ type ErrMsg struct{ Err error }
 // DoneMsg means the source closed (EOF on a file, for example).
 type DoneMsg struct{}
 
+// StatusErrMsg is a client/tail error that must not enter the log stream.
+type StatusErrMsg struct {
+	Time time.Time
+	Text string
+}
+
+type statusErr struct {
+	Time  time.Time
+	Text  string
+	Count int
+}
+
+const maxStatusErrs = 80
+
 type logLine struct {
 	Ev     source.Event
 	Rec    parse.Record
@@ -72,10 +88,14 @@ type srcStat struct {
 
 // Options configure the TUI session.
 type Options struct {
-	Title     string
-	Context   string
-	Namespace string
-	Query     string
+	Title      string
+	Context    string
+	Namespace  string
+	Query      string
+	Namespaces []string
+	// SwitchNS retargets the cluster tailer. Empty means all namespaces.
+	// Nil when the source is a file, stdin, or demo.
+	SwitchNS func(string)
 }
 
 type model struct {
@@ -106,7 +126,20 @@ type model struct {
 	srcSel  int
 	srcOnly string
 
-	detail viewport.Model
+	nsOnly   string
+	nsChosen bool
+	showNS   bool
+	nsSel    int
+	nsKnown  []string
+
+	detailLines []string
+	detailOff   int
+	detailKey   string
+	detailJSON  bool
+
+	errs     []statusErr
+	showErrs bool
+	errSel   int
 
 	started time.Time
 	err     error
@@ -123,6 +156,7 @@ func New(opts Options) tea.Model {
 	ti.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#E8EEF4"))
 	ti.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE6C4D"))
 
+	known := append([]string(nil), opts.Namespaces...)
 	return &model{
 		opts:        opts,
 		theme:       defaultTheme(),
@@ -132,8 +166,8 @@ func New(opts Options) tea.Model {
 		focus:       paneLogs,
 		input:       ti,
 		srcIdx:      map[string]int{},
+		nsKnown:     known,
 		started:     time.Now(),
-		detail:      viewport.New(0, 0),
 	}
 }
 
@@ -158,6 +192,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ErrMsg:
 		m.err = msg.Err
+		m.pushErr(time.Now(), msg.Err.Error())
+		return m, nil
+
+	case StatusErrMsg:
+		m.pushErr(msg.Time, msg.Text)
 		return m, nil
 
 	case DoneMsg:
@@ -177,11 +216,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyFilter(m.input.Value())
 		return m, cmd
 	}
-	if m.focus == paneDetail {
-		var cmd tea.Cmd
-		m.detail, cmd = m.detail.Update(msg)
-		return m, cmd
-	}
 	return m, nil
 }
 
@@ -192,6 +226,68 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.showHelp = false
 		}
 		return m, nil
+	}
+
+	if m.showNS {
+		switch msg.String() {
+		case "n", "esc", "q":
+			m.showNS = false
+		case "j", "down":
+			if m.nsSel < len(m.nsItems())-1 {
+				m.nsSel++
+			}
+		case "k", "up":
+			if m.nsSel > 0 {
+				m.nsSel--
+			}
+		case "enter":
+			m.pickNamespace(m.nsSel)
+			m.showNS = false
+		case "g", "home":
+			m.nsSel = 0
+		case "G", "end":
+			if n := len(m.nsItems()); n > 0 {
+				m.nsSel = n - 1
+			}
+		}
+		return m, nil
+	}
+
+	if m.showErrs {
+		switch msg.String() {
+		case "e", "esc", "q", "enter":
+			m.showErrs = false
+		case "j", "down":
+			if m.errSel < len(m.errs)-1 {
+				m.errSel++
+			}
+		case "k", "up":
+			if m.errSel > 0 {
+				m.errSel--
+			}
+		case "c":
+			m.errs = nil
+			m.errSel = 0
+			m.showErrs = false
+		}
+		return m, nil
+	}
+
+	if m.focus == paneDetail {
+		switch msg.String() {
+		case "j", "down":
+			m.scrollDetail(1)
+			return m, nil
+		case "k", "up":
+			m.scrollDetail(-1)
+			return m, nil
+		case "pgdown", "ctrl+d":
+			m.scrollDetail(m.layout().detRows)
+			return m, nil
+		case "pgup", "ctrl+u":
+			m.scrollDetail(-m.layout().detRows)
+			return m, nil
+		}
 	}
 
 	if m.focus == paneSources {
@@ -235,6 +331,15 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "?":
 		m.showHelp = true
+	case "e":
+		if len(m.errs) > 0 {
+			m.showErrs = true
+			if m.errSel >= len(m.errs) {
+				m.errSel = len(m.errs) - 1
+			}
+		}
+	case "n":
+		m.openNamespacePicker()
 	case "/":
 		m.focus = paneFilter
 		return m, m.input.Focus()
@@ -282,12 +387,6 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.showDetail = !m.showDetail
 			m.relayout()
-		}
-	default:
-		if m.focus == paneDetail {
-			var cmd tea.Cmd
-			m.detail, cmd = m.detail.Update(msg)
-			return m, cmd
 		}
 	}
 	m.refreshDetail()
@@ -353,7 +452,8 @@ func (m *model) ingest(batch []source.Event) {
 		}
 		m.lines = append(m.lines, ln)
 		m.bumpSource(ln)
-		if m.live.Match(ln.Rec, ln.Source) && (m.srcOnly == "" || m.srcOnly == ln.Source) {
+		m.rememberNS(ev.Namespace)
+		if m.keepLine(ln) {
 			m.filtered = append(m.filtered, len(m.lines)-1)
 		}
 	}
@@ -387,6 +487,82 @@ func (m *model) bumpSource(ln logLine) {
 	m.sources = append(m.sources, srcStat{ID: ln.Source, Color: ln.Color, Count: 1})
 }
 
+func (m *model) keepLine(ln logLine) bool {
+	if m.srcOnly != "" && ln.Source != m.srcOnly {
+		return false
+	}
+	if m.nsOnly != "" && ln.Ev.Namespace != m.nsOnly {
+		return false
+	}
+	return m.live.Match(ln.Rec, ln.Source)
+}
+
+func (m *model) rememberNS(ns string) {
+	if ns == "" {
+		return
+	}
+	for _, n := range m.nsKnown {
+		if n == ns {
+			return
+		}
+	}
+	m.nsKnown = append(m.nsKnown, ns)
+}
+
+func (m *model) nsItems() []string {
+	seen := map[string]struct{}{}
+	items := make([]string, 0, len(m.nsKnown)+1)
+	items = append(items, "")
+	for _, n := range m.nsKnown {
+		if n == "" {
+			continue
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		items = append(items, n)
+	}
+	sort.Strings(items[1:])
+	return items
+}
+
+func (m *model) nsCounts() map[string]int {
+	c := map[string]int{}
+	for _, ln := range m.lines {
+		if ln.Ev.Namespace != "" {
+			c[ln.Ev.Namespace]++
+		}
+	}
+	return c
+}
+
+func (m *model) openNamespacePicker() {
+	m.showNS = true
+	items := m.nsItems()
+	m.nsSel = 0
+	for i, n := range items {
+		if n == m.nsOnly {
+			m.nsSel = i
+			break
+		}
+	}
+}
+
+func (m *model) pickNamespace(idx int) {
+	items := m.nsItems()
+	if idx < 0 || idx >= len(items) {
+		return
+	}
+	m.nsOnly = items[idx]
+	m.nsChosen = true
+	m.srcOnly = ""
+	m.refilter()
+	if m.opts.SwitchNS != nil {
+		m.opts.SwitchNS(m.nsOnly)
+	}
+}
+
 func (m *model) applyFilter(pattern string) {
 	typed := filter.Compile(pattern)
 	m.typed = typed
@@ -399,10 +575,7 @@ func (m *model) applyFilter(pattern string) {
 func (m *model) refilter() {
 	m.filtered = m.filtered[:0]
 	for i, ln := range m.lines {
-		if m.srcOnly != "" && ln.Source != m.srcOnly {
-			continue
-		}
-		if m.live.Match(ln.Rec, ln.Source) {
+		if m.keepLine(ln) {
 			m.filtered = append(m.filtered, i)
 		}
 	}
@@ -468,65 +641,125 @@ func (m *model) selected() (logLine, bool) {
 func (m *model) refreshDetail() {
 	ln, ok := m.selected()
 	if !ok {
-		m.detail.SetContent("")
+		m.detailLines = nil
+		m.detailOff = 0
+		m.detailKey = ""
+		m.detailJSON = false
 		return
 	}
-	m.detail.SetContent(ln.Rec.Pretty())
+	key := fmt.Sprintf("%d:%s", m.filtered[m.cursor], ln.Source)
+	isJSON := len(ln.Rec.JSONBytes) > 0
+	width := max(8, m.layout().detW-4)
+	m.detailLines = strings.Split(wrapWidth(ln.Rec.Pretty(), width), "\n")
+	if key != m.detailKey || isJSON != m.detailJSON {
+		m.detailOff = 0
+	}
+	m.detailKey = key
+	m.detailJSON = isJSON
+	m.clampDetail()
+}
+
+func (m *model) scrollDetail(delta int) {
+	m.detailOff += delta
+	m.clampDetail()
+}
+
+func (m *model) clampDetail() {
+	vis := m.layout().detRows
+	maxOff := len(m.detailLines) - vis
+	if maxOff < 0 {
+		maxOff = 0
+	}
+	if m.detailOff > maxOff {
+		m.detailOff = maxOff
+	}
+	if m.detailOff < 0 {
+		m.detailOff = 0
+	}
+}
+
+func (m *model) pushErr(t time.Time, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if t.IsZero() {
+		t = time.Now()
+	}
+	if n := len(m.errs); n > 0 && m.errs[n-1].Text == text {
+		m.errs[n-1].Count++
+		m.errs[n-1].Time = t
+		return
+	}
+	m.errs = append(m.errs, statusErr{Time: t, Text: text, Count: 1})
+	if len(m.errs) > maxStatusErrs {
+		m.errs = append([]statusErr(nil), m.errs[len(m.errs)-maxStatusErrs:]...)
+	}
+	m.errSel = len(m.errs) - 1
 }
 
 func (m *model) relayout() {
-	_, _, dw, dh := m.geom()
-	m.detail.Width = dw
-	m.detail.Height = dh
-	m.input.Width = max(10, m.width-28)
+	m.input.Width = max(10, m.width-24)
 	m.ensureVisible()
 	m.refreshDetail()
 }
 
 func (m *model) logHeight() int {
-	_, lh, _, _ := m.geom()
-	return lh
+	return m.layout().logRows
 }
 
-func (m *model) geom() (srcW, logH, detailW, detailH int) {
-	// header + filter + footer
-	inner := m.height - 3
-	if inner < 4 {
-		inner = 4
+// frame is a pixel-perfect tile map for one terminal size.
+// Every pane size includes its border; the four rows header/body/filter/footer
+// sum to m.height and the columns sum to m.width so toggling detail cannot
+// push the header off-screen.
+type frame struct {
+	bodyW, bodyH int
+	srcW, srcH   int
+	logW, logH   int
+	detW, detH   int
+	logRows      int
+	detRows      int
+	srcRows      int
+}
+
+func (m *model) layout() frame {
+	var f frame
+	f.bodyW = max(20, m.width)
+	f.bodyH = m.height - 3 // header + filter + footer
+	if f.bodyH < 8 {
+		f.bodyH = 8
 	}
-	srcW = 0
+
 	if m.showSources && m.width >= 100 {
-		srcW = 30
-	}
-	detailH = 0
-	detailW = m.width
-	if srcW > 0 {
-		detailW = m.width - srcW - 1
-	}
-	if m.showDetail && inner >= 10 {
-		detailH = inner / 3
-		if detailH < 6 {
-			detailH = 6
+		f.srcW = 28
+		if m.width < 120 {
+			f.srcW = 24
 		}
-		if detailH > 18 {
-			detailH = 18
+		f.srcH = f.bodyH
+		f.srcRows = max(1, f.srcH-3)
+	}
+
+	rightW := f.bodyW - f.srcW
+	f.logW = rightW
+	if m.showDetail && f.bodyH >= 12 {
+		f.detW = rightW
+		f.detH = f.bodyH / 3
+		if f.detH < 8 {
+			f.detH = 8
 		}
+		if f.detH > 18 {
+			f.detH = 18
+		}
+		if f.detH > f.bodyH-7 {
+			f.detH = f.bodyH - 7
+		}
+		f.logH = f.bodyH - f.detH
+		f.detRows = max(1, f.detH-3)
+	} else {
+		f.logH = f.bodyH
 	}
-	logH = inner - detailH
-	if logH < 3 {
-		logH = 3
-	}
-	// account for box borders on logs/detail
-	if logH > 2 {
-		logH -= 2
-	}
-	if detailH > 2 {
-		detailH -= 2
-	}
-	if detailW > 2 {
-		detailW -= 2
-	}
-	return srcW, logH, detailW, detailH
+	f.logRows = max(1, f.logH-3)
+	return f
 }
 
 func (m *model) matchCount() int { return len(m.filtered) }
@@ -536,9 +769,14 @@ func (m *model) headerText() string {
 	if m.opts.Context != "" {
 		bits = append(bits, "ctx="+m.opts.Context)
 	}
-	if m.opts.Namespace != "" {
+	switch {
+	case m.nsOnly != "":
+		bits = append(bits, "ns="+m.nsOnly)
+	case m.nsChosen:
+		bits = append(bits, "ns=*")
+	case m.opts.Namespace != "":
 		bits = append(bits, "ns="+m.opts.Namespace)
-	} else if m.opts.Title != "" {
+	case m.opts.Title != "":
 		bits = append(bits, m.opts.Title)
 	}
 	if m.opts.Query != "" && m.opts.Query != ".*" {

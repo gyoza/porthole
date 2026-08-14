@@ -39,20 +39,20 @@ func main() {
 
 	root := &cobra.Command{
 		Use:   "porthole [pod-query]",
-		Short: "Windowed Kubernetes log tailer with live regex and JSON intelligence",
-		Long: `porthole is a Stern-like log tailer with a paneled terminal UI.
+		Short: "Windowed multi-pod log tailer (like Stern)",
+		Long: `porthole tails matching pods the way Stern does, in a paneled TUI.
 
-It follows matching pods, parses JSON automatically (Envoy Gateway access
-logs, zap/slog/logrus, and JSON-with-a-text-prefix), and filters the stream
-with a regex that recompiles as you type.
+There is no json/plain switch. Each line is sniffed on its own: Envoy
+Gateway JSON, zap/slog, nginx combined, klog, or leftover text.
+
+The filter box is a live regex, recompiled as you type.
 
 Examples:
-  porthole                              # all pods in the current namespace
-  porthole -n envoy-gateway-system      # a namespace
-  porthole -l gateway.envoyproxy.io/owning-gateway-name=eg
-  porthole --demo                       # generated Envoy-style JSON
-  porthole --file ./app.jsonl
-  kubectl logs -f deploy/foo | porthole --stdin
+  porthole                              # current namespace, every pod
+  porthole -n envoy-gateway-system
+  porthole -A 'envoy.*'
+  porthole -l app=foo -c sidecar
+  kubectl logs -f deploy/foo | porthole
 `,
 		Args:    cobra.MaximumNArgs(1),
 		Version: version,
@@ -76,7 +76,7 @@ Examples:
 	root.Flags().DurationVar(&f.since, "since", 0, "show logs newer than a relative duration (e.g. 5m)")
 	root.Flags().StringVar(&f.context, "context", "", "kubeconfig context")
 	root.Flags().StringVar(&f.kubeconfig, "kubeconfig", "", "path to kubeconfig")
-	root.Flags().BoolVar(&f.demo, "demo", false, "stream generated Envoy Gateway-style JSON logs")
+	root.Flags().BoolVar(&f.demo, "demo", false, "stream mixed fake logs (JSON + plain) without a cluster")
 	root.Flags().StringVar(&f.file, "file", "", "read a log file instead of the cluster")
 	root.Flags().BoolVar(&f.stdin, "stdin", false, "read log lines from stdin")
 
@@ -88,6 +88,14 @@ Examples:
 func run(f flags, query string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	klogCh := make(chan string, 64)
+	source.CaptureKlog(func(line string) {
+		select {
+		case klogCh <- line:
+		default:
+		}
+	})
 
 	events := make(chan source.Event, 8192)
 	opts := ui.Options{Query: query}
@@ -153,19 +161,67 @@ func run(f flags, query string) error {
 		}
 		opts.Namespace = ns
 		opts.Context = source.CurrentContext(f.kubeconfig, f.context)
+		opts.Namespaces = source.ListNamespaces(ctx, cs)
 		watchNS := ns
 		if f.allNS {
 			watchNS = ""
 			opts.Namespace = "*"
 		}
+		switchCh := make(chan string, 1)
+		opts.SwitchNS = func(target string) {
+			select {
+			case switchCh <- target:
+			default:
+				select {
+				case <-switchCh:
+				default:
+				}
+				select {
+				case switchCh <- target:
+				default:
+				}
+			}
+		}
 		go func() {
 			defer close(events)
-			if err := source.TailPods(ctx, cs, watchNS, kopts, events); err != nil && ctx.Err() == nil {
-				// surfaced via a synthetic event so the TUI can show it
-				events <- source.Event{
-					Time: time.Now(),
-					Pod:  "porthole",
-					Line: fmt.Sprintf(`{"level":"error","msg":"tail failed","error":%q}`, err.Error()),
+			current := watchNS
+			for {
+				tctx, tcancel := context.WithCancel(ctx)
+				done := make(chan error, 1)
+				tkopts := kopts
+				tkopts.Namespace = current
+				tkopts.AllNS = current == ""
+				go func() {
+					done <- source.TailPods(tctx, cs, current, tkopts, events)
+				}()
+				select {
+				case <-ctx.Done():
+					tcancel()
+					return
+				case next := <-switchCh:
+					tcancel()
+					<-done
+					current = next
+				case err := <-done:
+					tcancel()
+					if ctx.Err() != nil {
+						return
+					}
+					if err != nil {
+						events <- source.Event{
+							Time: time.Now(),
+							Pod:  "porthole",
+							Err:  "tail failed: " + err.Error(),
+						}
+					}
+					select {
+					case <-ctx.Done():
+						return
+					case next := <-switchCh:
+						current = next
+					case <-time.After(2 * time.Second):
+						// retry same target
+					}
 				}
 			}
 		}()
@@ -177,7 +233,7 @@ func run(f flags, query string) error {
 		tea.WithMouseCellMotion(),
 	)
 
-	go pump(ctx, events, prog)
+	go pump(ctx, events, klogCh, prog)
 
 	if _, err := prog.Run(); err != nil {
 		return err
@@ -186,7 +242,7 @@ func run(f flags, query string) error {
 	return nil
 }
 
-func pump(ctx context.Context, events <-chan source.Event, prog *tea.Program) {
+func pump(ctx context.Context, events <-chan source.Event, klogCh <-chan string, prog *tea.Program) {
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	var batch []source.Event
@@ -208,10 +264,16 @@ func pump(ctx context.Context, events <-chan source.Event, prog *tea.Program) {
 				prog.Send(ui.DoneMsg{})
 				return
 			}
+			if ev.Err != "" {
+				prog.Send(ui.StatusErrMsg{Time: ev.Time, Text: ev.Err})
+				continue
+			}
 			batch = append(batch, ev)
 			if len(batch) >= 64 {
 				flush()
 			}
+		case line := <-klogCh:
+			prog.Send(ui.StatusErrMsg{Time: time.Now(), Text: line})
 		case <-ticker.C:
 			flush()
 		}

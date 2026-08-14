@@ -14,62 +14,124 @@ func (m *model) View() string {
 		return "starting porthole…"
 	}
 	if m.showHelp {
-		return m.helpView()
+		return clipFrame(m.helpView(), m.width, m.height)
+	}
+	if m.showNS {
+		return clipFrame(m.nsView(), m.width, m.height)
+	}
+	if m.showErrs {
+		return clipFrame(m.errView(), m.width, m.height)
 	}
 
-	header := m.theme.header().Width(m.width).Render(truncate(m.headerText(), m.width-2))
-	body := m.bodyView()
+	ly := m.layout()
+	header := m.headerView()
+	body := m.bodyView(ly)
 	filter := m.filterView()
-	footer := m.theme.footer().Width(m.width).Render(truncate(m.footerText(), m.width))
+	footer := m.fitLine(m.theme.footer(), m.footerText())
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, filter, footer)
+	return clipFrame(lipgloss.JoinVertical(lipgloss.Left, header, body, filter, footer), m.width, m.height)
 }
 
-func (m *model) bodyView() string {
-	srcW, logH, _, detailH := m.geom()
-	logs := m.logsView(logH)
-	if m.showDetail && detailH > 0 {
-		logs = lipgloss.JoinVertical(lipgloss.Left, logs, m.detailView())
+func clipFrame(s string, w, h int) string {
+	if w < 1 {
+		w = 1
 	}
-	if srcW > 0 {
-		return lipgloss.JoinHorizontal(lipgloss.Top, m.sourcesView(srcW), logs)
+	if h < 1 {
+		h = 1
 	}
-	return logs
+	return lipgloss.NewStyle().Width(w).Height(h).MaxWidth(w).MaxHeight(h).Render(s)
 }
 
-func (m *model) logsView(innerH int) string {
-	active := m.focus == paneLogs
-	w := m.width
-	if srcW, _, _, _ := m.geom(); srcW > 0 {
-		w = m.width - srcW
+func (m *model) fitLine(st lipgloss.Style, text string) string {
+	return st.Width(max(1, m.width)).MaxHeight(1).Render(truncate(text, max(1, m.width-2)))
+}
+
+func (m *model) pane(title string, active bool, w, h int, body string) string {
+	if w < 2 || h < 2 {
+		return ""
 	}
-	title := m.theme.title(active).Render("logs")
-	rows := make([]string, 0, innerH)
+	innerW, innerH := w-2, h-2
+	content := m.theme.title(active).Render(truncate(title, max(1, innerW-2))) + "\n" + body
+	content = clipLines(content, innerH)
+	return m.theme.borderBox(active).
+		Width(innerW).
+		Height(innerH).
+		MaxWidth(w).
+		MaxHeight(h).
+		Render(content)
+}
+
+func clipLines(s string, n int) string {
+	if n < 1 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	for len(lines) < n {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *model) headerView() string {
+	left := truncate(m.headerText(), max(8, m.width-28))
+	right := ""
+	if n := len(m.errs); n > 0 {
+		label := fmt.Sprintf("%d error", n)
+		if n != 1 {
+			label += "s"
+		}
+		label += "  e"
+		right = m.theme.error().Bold(true).Render(label)
+	}
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+	line := left + strings.Repeat(" ", gap) + right
+	return m.theme.header().Width(max(1, m.width)).MaxHeight(1).Render(line)
+}
+
+func (m *model) bodyView(ly frame) string {
+	logs := m.logsView(ly)
+	right := logs
+	if ly.detH > 0 {
+		right = lipgloss.JoinVertical(lipgloss.Left, logs, m.detailView(ly))
+	}
+	if ly.srcW > 0 {
+		return lipgloss.JoinHorizontal(lipgloss.Top, m.sourcesView(ly), right)
+	}
+	return right
+}
+
+func (m *model) logsView(ly frame) string {
+	rows := make([]string, 0, ly.logRows)
 	if len(m.filtered) == 0 {
 		msg := "waiting for logs…"
 		if len(m.lines) > 0 {
 			msg = "no lines match the current regex"
 		}
 		if m.err != nil {
-			msg = m.theme.error().Render(m.err.Error())
+			msg = m.err.Error()
 		}
 		rows = append(rows, m.theme.dim().Render("  "+msg))
 	} else {
-		end := m.offset + innerH
+		end := m.offset + ly.logRows
 		if end > len(m.filtered) {
 			end = len(m.filtered)
 		}
+		innerW := max(8, ly.logW-4)
 		for i := m.offset; i < end; i++ {
 			ln := m.lines[m.filtered[i]]
-			rows = append(rows, m.renderLine(ln, w-4, i == m.cursor))
+			rows = append(rows, m.renderLine(ln, innerW, i == m.cursor))
 		}
 	}
-	for len(rows) < innerH {
+	for len(rows) < ly.logRows {
 		rows = append(rows, "")
 	}
-	content := strings.Join(rows, "\n")
-	box := m.theme.borderBox(active).Width(max(0, w-2)).Render(title + "\n" + content)
-	return box
+	return m.pane("logs", m.focus == paneLogs, ly.logW, ly.logH, strings.Join(rows, "\n"))
 }
 
 func (m *model) renderLine(ln logLine, width int, selected bool) string {
@@ -94,9 +156,12 @@ func (m *model) renderLine(ln logLine, width int, selected bool) string {
 	default:
 		body = base.Render(ln.Rec.Display)
 	}
-	if m.live.Regexp != nil && ln.Rec.Kind == parse.KindPlain {
+	if m.live.Regexp != nil {
 		hi := lipgloss.NewStyle().Foreground(lipgloss.Color("#1B2838")).Background(m.theme.warn)
-		body = highlight(ln.Rec.Display, m.live.Regexp, base, hi)
+		// Highlight against the already-painted line when we can; fallback to display.
+		if ln.Rec.Kind == parse.KindPlain {
+			body = highlight(ln.Rec.Display, m.live.Regexp, base, hi)
+		}
 	}
 
 	line := prefix + " " + body
@@ -108,82 +173,216 @@ func (m *model) renderLine(ln logLine, width int, selected bool) string {
 	return truncatePlain(line, width)
 }
 
-func (m *model) sourcesView(w int) string {
-	active := m.focus == paneSources
-	innerH := m.height - 5
-	if m.showDetail {
-		innerH = m.height - 5
-	}
-	if innerH < 3 {
-		innerH = 3
-	}
-	title := m.theme.title(active).Render("sources")
+func (m *model) sourcesView(ly frame) string {
 	rows := make([]string, 0, len(m.sources))
 	for i, s := range m.sources {
 		mark := " "
 		if s.ID == m.srcOnly {
 			mark = "●"
 		}
-		label := fmt.Sprintf("%s %-18s %5d", mark, truncate(shortSource(s.ID), 18), s.Count)
+		label := fmt.Sprintf("%s %-16s %5d", mark, truncate(shortSource(s.ID), 16), s.Count)
 		st := lipgloss.NewStyle().Foreground(s.Color)
-		if i == m.srcSel && active {
+		if i == m.srcSel && m.focus == paneSources {
 			st = st.Background(m.theme.selBg).Bold(true)
 		}
-		rows = append(rows, st.Render(label))
+		rows = append(rows, st.Render(truncate(label, max(4, ly.srcW-4))))
 	}
 	if len(rows) == 0 {
 		rows = append(rows, m.theme.dim().Render("  (none yet)"))
 	}
-	// keep a window around selection
-	content := strings.Join(rows, "\n")
-	return m.theme.borderBox(active).Width(w - 2).Height(max(3, innerH)).Render(title + "\n" + content)
+	if start := srcWindow(m.srcSel, len(rows), ly.srcRows); start > 0 {
+		rows = rows[start:]
+	}
+	return m.pane("sources", m.focus == paneSources, ly.srcW, ly.srcH, strings.Join(rows, "\n"))
 }
 
-func (m *model) detailView() string {
-	active := m.focus == paneDetail
-	title := "json"
+func srcWindow(sel, n, avail int) int {
+	if n <= avail || avail <= 0 {
+		return 0
+	}
+	start := sel - avail/2
+	if start < 0 {
+		start = 0
+	}
+	if start > n-avail {
+		start = n - avail
+	}
+	return start
+}
+
+func (m *model) detailView(ly frame) string {
+	title := "detail"
 	if ln, ok := m.selected(); ok {
-		if ln.Rec.JSONBytes == nil {
-			title = "raw"
-		} else {
-			title = "json · " + shortSource(ln.Source)
+		kind := "log"
+		if len(ln.Rec.JSONBytes) > 0 {
+			kind = "json"
+		}
+		title = truncate(kind+" · "+shortSource(ln.Source), max(4, ly.detW-6))
+	}
+	rows := ly.detRows
+	start := m.detailOff
+	if start > len(m.detailLines) {
+		start = 0
+	}
+	end := start + rows
+	if end > len(m.detailLines) {
+		end = len(m.detailLines)
+	}
+	var body []string
+	if start < end {
+		body = append(body, m.detailLines[start:end]...)
+	}
+	for len(body) < rows {
+		body = append(body, "")
+	}
+	return m.pane(title, m.focus == paneDetail, ly.detW, ly.detH, strings.Join(body, "\n"))
+}
+
+// wrapWidth hard-wraps s to width cells so the detail viewport's line
+// count matches what is drawn (JSON pretty vs one long nginx line).
+func wrapWidth(s string, width int) string {
+	if width < 8 {
+		width = 8
+	}
+	var b strings.Builder
+	first := true
+	for _, line := range strings.Split(s, "\n") {
+		for {
+			head, rest := cutCells(line, width)
+			if !first {
+				b.WriteByte('\n')
+			}
+			first = false
+			b.WriteString(head)
+			if rest == "" {
+				break
+			}
+			line = rest
 		}
 	}
-	head := m.theme.title(active).Render(title)
-	body := m.detail.View()
-	w := m.width
-	if srcW, _, _, _ := m.geom(); srcW > 0 {
-		w = m.width - srcW
+	return b.String()
+}
+
+func cutCells(s string, n int) (head, rest string) {
+	if n <= 0 || s == "" {
+		return s, ""
 	}
-	return m.theme.borderBox(active).Width(max(0, w-2)).Render(head + "\n" + body)
+	w := 0
+	for i, r := range s {
+		cw := 1
+		if r == '\t' {
+			cw = 4
+		}
+		if w+cw > n {
+			if i == 0 {
+				i = len(string(r))
+			}
+			return s[:i], s[i:]
+		}
+		w += cw
+	}
+	return s, ""
 }
 
 func (m *model) filterView() string {
 	status := m.theme.okStyle().Render("all")
 	if m.typed.Err != nil {
-		status = m.theme.error().Render("invalid regex — keeping last valid")
+		status = m.theme.error().Render("invalid regex")
 	} else if m.live.Pattern != "" {
 		status = m.theme.okStyle().Render(fmt.Sprintf("%s matches", comma(m.matchCount())))
 	} else if m.srcOnly != "" {
 		status = m.theme.dim().Render("source " + shortSource(m.srcOnly))
+	} else if m.nsOnly != "" {
+		status = m.theme.dim().Render("ns " + m.nsOnly)
 	}
 	input := m.input.View()
-	gap := m.width - lipgloss.Width(input) - lipgloss.Width(status) - 2
+	gap := m.width - lipgloss.Width(input) - lipgloss.Width(status)
 	if gap < 1 {
 		gap = 1
 	}
 	line := input + strings.Repeat(" ", gap) + status
+	st := lipgloss.NewStyle()
 	if m.focus == paneFilter {
-		return lipgloss.NewStyle().Foreground(m.theme.accent).Render(line)
+		st = st.Foreground(m.theme.accent)
 	}
-	return line
+	return st.Width(max(1, m.width)).MaxHeight(1).Render(line)
 }
 
 func (m *model) footerText() string {
-	if m.err != nil {
-		return "error: " + m.err.Error()
+	return " / filter   n namespace   j/k move   f follow   p pause   d detail   s sources   e errors   ? help   q quit"
+}
+
+func (m *model) nsView() string {
+	items := m.nsItems()
+	counts := m.nsCounts()
+	var b strings.Builder
+	b.WriteString("namespace  (enter select   n/esc close)\n\n")
+	for i, ns := range items {
+		mark := "  "
+		if i == m.nsSel {
+			mark = "▸ "
+		}
+		dot := " "
+		label := "*  all namespaces"
+		n := 0
+		if ns == "" {
+			n = len(m.lines)
+			if m.nsOnly == "" {
+				dot = "●"
+			}
+		} else {
+			label = ns
+			n = counts[ns]
+			if m.nsOnly == ns {
+				dot = "●"
+			}
+		}
+		b.WriteString(fmt.Sprintf("%s%s %-28s %6d\n", mark, dot, label, n))
 	}
-	return " / filter   j/k move   f follow   p pause   d detail   s sources   ? help   q quit"
+	if len(items) == 1 {
+		b.WriteString("\n  (namespaces appear as logs arrive)\n")
+	}
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.theme.accent).
+		Padding(1, 2).
+		Width(min(72, max(40, m.width-8))).
+		MaxHeight(max(10, m.height-4)).
+		Render(strings.TrimRight(b.String(), "\n"))
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+func (m *model) errView() string {
+	var b strings.Builder
+	b.WriteString("errors  (e/esc close   c clear)\n\n")
+	if len(m.errs) == 0 {
+		b.WriteString("  (none)")
+	} else {
+		for i, e := range m.errs {
+			mark := "  "
+			if i == m.errSel {
+				mark = "▸ "
+			}
+			n := ""
+			if e.Count > 1 {
+				n = fmt.Sprintf("  ×%d", e.Count)
+			}
+			b.WriteString(mark)
+			b.WriteString(e.Time.Format("15:04:05"))
+			b.WriteString("  ")
+			b.WriteString(e.Text)
+			b.WriteString(n)
+			b.WriteByte('\n')
+		}
+	}
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.theme.err).
+		Padding(1, 2).
+		Width(min(100, max(40, m.width-6))).
+		MaxHeight(max(8, m.height-4)).
+		Render(b.String())
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
 func (m *model) helpView() string {

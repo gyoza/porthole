@@ -94,9 +94,7 @@ func Line(raw string) Record {
 
 	obj, js, ok := extractJSON(trimmed)
 	if !ok {
-		rec.Display = raw
-		rec.Flat = raw
-		return rec
+		return parsePlain(raw, trimmed)
 	}
 
 	unwrapNested(obj)

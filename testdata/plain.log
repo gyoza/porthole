@@ -1,0 +1,10 @@
+2026-08-14T21:00:01Z INFO listening on :8080
+2026-08-14T21:00:02Z WARN cache miss key=user:42
+[ERROR] failed to frobnicate widget
+I0814 21:00:03.000001       1 main.go:40] starting workers
+E0814 21:00:04.000001       1 worker.go:12] connection reset
+10.1.0.4 - - [14/Aug/2026:21:00:05 +0000] "GET /index.html HTTP/1.1" 200 612
+10.1.0.4 - - [14/Aug/2026:21:00:06 +0000] "POST /login HTTP/1.1" 401 19
+ts=2026-08-14T21:00:07Z level=error msg="upstream timeout" method=GET path=/api/orders status=504
+just a regular line from a sidecar
+2026-08-14 21:00:08.123 INFO request complete
