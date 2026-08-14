@@ -148,6 +148,20 @@ func TestErrorsStayInBadgeNotFrame(t *testing.T) {
 	}
 }
 
+func TestSkipANSIKeepsColor(t *testing.T) {
+	s := "\x1b[31mGET\x1b[0m  \x1b[32m/very/long/path\x1b[0m"
+	cut := skipANSICells(s, 5)
+	if !strings.Contains(cut, "\x1b[") {
+		t.Fatalf("expected ANSI to survive a horizontal skip: %q", cut)
+	}
+	if strings.Contains(cut, "GET") {
+		t.Fatalf("should have skipped GET: %q", cut)
+	}
+	if !strings.Contains(cut, "/very/long/path") {
+		t.Fatalf("expected remaining path, got %q", cut)
+	}
+}
+
 func TestNamespacePickerFilters(t *testing.T) {
 	m := testModel(140, 40, true, true)
 	plain := `2026-08-14T21:00:01Z INFO worker tick n=3`

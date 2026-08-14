@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -153,28 +154,28 @@ func (m *model) renderLine(ln logLine, width int, selected bool) string {
 	}
 	prefix := srcSt.Render(fmt.Sprintf("%-22s", truncate(src, 22)))
 
-	disp := skipPlainCells(ln.Rec.Display, m.logCol)
 	var body string
-	switch {
-	case m.logCol > 0:
-		body = base.Render(disp)
-	case ln.Rec.Kind == parse.KindHTTP:
+	switch ln.Rec.Kind {
+	case parse.KindHTTP:
 		body = paintHTTP(m.theme, ln.Rec, base)
-	case ln.Rec.Kind == parse.KindApp:
+	case parse.KindApp:
 		body = paintApp(m.theme, ln.Rec, base)
 	default:
-		body = base.Render(disp)
+		body = base.Render(ln.Rec.Display)
 	}
 	if re := m.live.Regexp; re != nil {
 		hi := lipgloss.NewStyle().Foreground(lipgloss.Color("#1B2838")).Background(m.theme.warn)
 		switch {
-		case re.MatchString(disp):
-			body = highlight(disp, re, base, hi)
+		case re.MatchString(ln.Rec.Display):
+			body = highlight(ln.Rec.Display, re, base, hi)
 		case ln.Rec.Status > 0 && m.live.Match(ln.Rec, ln.Source):
-			if stRe, err := regexp.Compile(`\b` + strconv.Itoa(ln.Rec.Status) + `\b`); err == nil && stRe.MatchString(disp) {
-				body = highlight(disp, stRe, base, hi)
+			if stRe, err := regexp.Compile(`\b` + strconv.Itoa(ln.Rec.Status) + `\b`); err == nil && stRe.MatchString(ln.Rec.Display) {
+				body = highlight(ln.Rec.Display, stRe, base, hi)
 			}
 		}
+	}
+	if m.logCol > 0 {
+		body = skipANSICells(body, m.logCol)
 	}
 
 	line := prefix + " " + body
@@ -186,22 +187,46 @@ func (m *model) renderLine(ln logLine, width int, selected bool) string {
 	return truncatePlain(line, width)
 }
 
-func skipPlainCells(s string, n int) string {
+// skipANSICells drops the first n printable cells but keeps escape
+// sequences so lipgloss colors stay in effect on the remainder.
+func skipANSICells(s string, n int) string {
 	if n <= 0 || s == "" {
 		return s
 	}
-	w := 0
-	for i, r := range s {
-		if w >= n {
-			return s[i:]
+	var b strings.Builder
+	skipped := 0
+	i := 0
+	for i < len(s) {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+				j++
+			}
+			if j < len(s) {
+				j++
+			}
+			b.WriteString(s[i:j])
+			i = j
+			continue
 		}
-		if r == '\t' {
-			w += 4
-		} else {
-			w++
+		if s[i] == 0x1b {
+			b.WriteByte(s[i])
+			i++
+			continue
 		}
+		_, size := utf8.DecodeRuneInString(s[i:])
+		if size < 1 {
+			size = 1
+		}
+		if skipped < n {
+			skipped++
+			i += size
+			continue
+		}
+		b.WriteString(s[i : i+size])
+		i += size
 	}
-	return ""
+	return b.String()
 }
 
 func (m *model) sourcesView(ly frame) string {
