@@ -19,17 +19,19 @@ const (
 	maxLines = 20000
 	helpText = `porthole — windowed log tailer
 
-  /            focus live regex
+  /            focus live regex (pre-filled by -i/--include)
   enter        apply / leave filter
   esc          leave filter or close help
   tab          cycle panes
   j k ↑ ↓      move selection
+  ← →          scroll a clipped log line
   g G          top / bottom
   pgup pgdn    page
   f            follow tail
   p            pause / resume ingest
-  d            toggle selected-line detail
-  s            toggle source list
+               (follow does not steal detail/sources while those panes are focused)
+  d            toggle [json]/[raw] pane
+  s            toggle [sources] pane
   e            view client / tail errors
   n            choose namespace
   ?            this help
@@ -93,6 +95,10 @@ type Options struct {
 	Namespace  string
 	Query      string
 	Namespaces []string
+	// Include is the initial live regex (Stern -i/--include).
+	Include string
+	// Exclude hides matching lines (Stern -e/--exclude). Not shown in / .
+	Exclude string
 	// SwitchNS retargets the cluster tailer. Empty means all namespaces.
 	// Nil when the source is a file, stdin, or demo.
 	SwitchNS func(string)
@@ -108,6 +114,7 @@ type model struct {
 	filtered []int
 	cursor   int
 	offset   int
+	logCol   int
 	follow   bool
 	paused   bool
 	eof      bool
@@ -117,9 +124,10 @@ type model struct {
 	showHelp    bool
 	focus       pane
 
-	input textinput.Model
-	live  filter.Filter
-	typed filter.Filter
+	input   textinput.Model
+	live    filter.Filter
+	typed   filter.Filter
+	exclude filter.Filter
 
 	sources []srcStat
 	srcIdx  map[string]int
@@ -150,14 +158,17 @@ func New(opts Options) tea.Model {
 	ti := textinput.New()
 	ti.Prompt = "/ "
 	ti.Placeholder = "live regex — try 5[0-9]{2} or POST|/login"
-	ti.CharLimit = 256
+	ti.CharLimit = 1024
 	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#5A6A80"))
 	ti.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#98C1D9")).Bold(true)
 	ti.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#E8EEF4"))
 	ti.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE6C4D"))
 
+	if opts.Include != "" {
+		ti.SetValue(opts.Include)
+	}
 	known := append([]string(nil), opts.Namespaces...)
-	return &model{
+	m := &model{
 		opts:        opts,
 		theme:       defaultTheme(),
 		follow:      true,
@@ -169,6 +180,13 @@ func New(opts Options) tea.Model {
 		nsKnown:     known,
 		started:     time.Now(),
 	}
+	if opts.Exclude != "" {
+		m.exclude = filter.Compile(opts.Exclude)
+	}
+	if opts.Include != "" {
+		m.applyFilter(opts.Include)
+	}
+	return m
 }
 
 func (m *model) Init() tea.Cmd {
@@ -287,6 +305,12 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "pgup", "ctrl+u":
 			m.scrollDetail(-m.layout().detRows)
 			return m, nil
+		case "left", "h":
+			m.scrollLogsH(-8)
+			return m, nil
+		case "right", "l":
+			m.scrollLogsH(8)
+			return m, nil
 		}
 	}
 
@@ -367,6 +391,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.offset = 0
 	case "G", "end":
 		m.jumpBottom()
+	case "left", "h":
+		m.scrollLogsH(-8)
+	case "right", "l":
+		m.scrollLogsH(8)
 	case "j", "down":
 		m.move(1)
 	case "k", "up":
@@ -407,14 +435,30 @@ func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// ignore
 	}
 	if msg.Button == tea.MouseButtonWheelUp {
-		m.move(-3)
-		m.refreshDetail()
+		m.wheel(-3)
 	}
 	if msg.Button == tea.MouseButtonWheelDown {
-		m.move(3)
-		m.refreshDetail()
+		m.wheel(3)
 	}
 	return m, nil
+}
+
+func (m *model) wheel(delta int) {
+	switch m.focus {
+	case paneDetail:
+		m.scrollDetail(delta)
+	case paneSources:
+		m.srcSel += delta
+		if m.srcSel < 0 {
+			m.srcSel = 0
+		}
+		if m.srcSel >= len(m.sources) {
+			m.srcSel = len(m.sources) - 1
+		}
+	default:
+		m.move(delta)
+		m.refreshDetail()
+	}
 }
 
 func (m *model) cyclePane(dir int) {
@@ -444,6 +488,7 @@ func (m *model) cyclePane(dir int) {
 
 func (m *model) ingest(batch []source.Event) {
 	for _, ev := range batch {
+		ev.Line = parse.Sanitize(ev.Line)
 		ln := logLine{
 			Ev:     ev,
 			Rec:    parse.Line(ev.Line),
@@ -463,11 +508,25 @@ func (m *model) ingest(batch []source.Event) {
 		m.rebuildSources()
 		m.refilter()
 	}
-	if m.follow && len(m.filtered) > 0 {
+	if m.viewFollowsTail() && len(m.filtered) > 0 {
 		m.cursor = len(m.filtered) - 1
 		m.ensureVisible()
 	}
 	m.refreshDetail()
+}
+
+// viewFollowsTail reports whether ingest should snap the log cursor (and
+// thus the detail pane) to the newest line. Following still appends
+// lines; only the live log list is pinned to the tail. Detail, sources,
+// and overlays keep their selection so they stay scrollable.
+func (m *model) viewFollowsTail() bool {
+	if !m.follow || m.paused {
+		return false
+	}
+	if m.showHelp || m.showErrs || m.showNS {
+		return false
+	}
+	return m.focus == paneLogs || m.focus == paneFilter
 }
 
 func (m *model) rebuildSources() {
@@ -494,7 +553,13 @@ func (m *model) keepLine(ln logLine) bool {
 	if m.nsOnly != "" && ln.Ev.Namespace != m.nsOnly {
 		return false
 	}
-	return m.live.Match(ln.Rec, ln.Source)
+	if !m.live.Match(ln.Rec, ln.Source) {
+		return false
+	}
+	if m.exclude.Regexp != nil && m.exclude.Match(ln.Rec, ln.Source) {
+		return false
+	}
+	return true
 }
 
 func (m *model) rememberNS(ns string) {
@@ -573,14 +638,29 @@ func (m *model) applyFilter(pattern string) {
 }
 
 func (m *model) refilter() {
+	pin := ""
+	if !m.viewFollowsTail() {
+		if ln, ok := m.selected(); ok {
+			pin = ln.Source + "\x00" + ln.Ev.Line
+		}
+	}
 	m.filtered = m.filtered[:0]
 	for i, ln := range m.lines {
 		if m.keepLine(ln) {
 			m.filtered = append(m.filtered, i)
 		}
 	}
-	if m.follow && len(m.filtered) > 0 {
+	if m.viewFollowsTail() && len(m.filtered) > 0 {
 		m.cursor = len(m.filtered) - 1
+	} else if pin != "" {
+		m.cursor = 0
+		for i, idx := range m.filtered {
+			ln := m.lines[idx]
+			if ln.Source+"\x00"+ln.Ev.Line == pin {
+				m.cursor = i
+				break
+			}
+		}
 	}
 	if m.cursor >= len(m.filtered) {
 		m.cursor = len(m.filtered) - 1
@@ -590,6 +670,16 @@ func (m *model) refilter() {
 	}
 	m.ensureVisible()
 	m.refreshDetail()
+}
+
+func (m *model) scrollLogsH(delta int) {
+	m.logCol += delta
+	if m.logCol < 0 {
+		m.logCol = 0
+	}
+	if m.logCol > 500 {
+		m.logCol = 500
+	}
 }
 
 func (m *model) move(delta int) {
@@ -736,7 +826,7 @@ func (m *model) layout() frame {
 			f.srcW = 24
 		}
 		f.srcH = f.bodyH
-		f.srcRows = max(1, f.srcH-3)
+		f.srcRows = max(1, f.srcH-2)
 	}
 
 	rightW := f.bodyW - f.srcW
@@ -754,11 +844,11 @@ func (m *model) layout() frame {
 			f.detH = f.bodyH - 7
 		}
 		f.logH = f.bodyH - f.detH
-		f.detRows = max(1, f.detH-3)
+		f.detRows = max(1, f.detH-2)
 	} else {
 		f.logH = f.bodyH
 	}
-	f.logRows = max(1, f.logH-3)
+	f.logRows = max(1, f.logH-2)
 	return f
 }
 
@@ -789,6 +879,8 @@ func (m *model) headerText() string {
 		bits = append(bits, "PAUSED")
 	case m.eof:
 		bits = append(bits, "EOF")
+	case m.follow:
+		bits = append(bits, "LIVE (Following)")
 	default:
 		bits = append(bits, "LIVE")
 	}

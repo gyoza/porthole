@@ -85,6 +85,7 @@ var (
 
 // Line parses a single raw log line.
 func Line(raw string) Record {
+	raw = Sanitize(raw)
 	rec := Record{Raw: raw, Kind: KindPlain}
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -305,6 +306,85 @@ func flatten(m map[string]any) string {
 	}
 	walk(m)
 	return b.String()
+}
+
+// SearchPieces are independent strings the live regex is applied to.
+// JSON is not searched as one blob, so response_code.*500 cannot jump
+// from the status field into a later 500 in duration, bytes, or an id.
+func (r Record) SearchPieces() []string {
+	out := []string{r.Display, r.Level, r.Message, r.Method, r.Path, r.Host, r.Duration, r.Flags, r.Protocol, r.RequestID}
+	if r.Status > 0 {
+		st := strconv.Itoa(r.Status)
+		out = append(out,
+			st,
+			"response_code="+st,
+			`"response_code":`+st,
+			`"response_code": `+st,
+			"status="+st,
+		)
+	}
+	if r.Fields != nil {
+		collectFields(r.Fields, "", &out)
+		out = append(out, rawOutsideJSON(r)...)
+	} else if r.Raw != "" {
+		out = append(out, r.Raw)
+	}
+	return out
+}
+
+// rawOutsideJSON is the text before/after the extracted JSON object —
+// CRI prefixes, a second object, or a UUID sitting next to the blob.
+func rawOutsideJSON(r Record) []string {
+	if r.Raw == "" {
+		return nil
+	}
+	if len(r.JSONBytes) == 0 {
+		return []string{r.Raw}
+	}
+	js := string(r.JSONBytes)
+	i := strings.Index(r.Raw, js)
+	if i < 0 {
+		return []string{r.Raw}
+	}
+	var out []string
+	if i > 0 {
+		out = append(out, r.Raw[:i])
+	}
+	if end := i + len(js); end < len(r.Raw) {
+		out = append(out, r.Raw[end:])
+	}
+	return out
+}
+
+func collectFields(m map[string]any, prefix string, out *[]string) {
+	for k, v := range m {
+		path := k
+		if prefix != "" {
+			path = prefix + "." + k
+		}
+		switch t := v.(type) {
+		case map[string]any:
+			collectFields(t, path, out)
+		case []any:
+			for _, iv := range t {
+				if nested, ok := iv.(map[string]any); ok {
+					collectFields(nested, path, out)
+				} else {
+					val := stringify(iv)
+					*out = append(*out, path, val, path+"="+val)
+				}
+			}
+		default:
+			val := stringify(t)
+			*out = append(*out,
+				path,
+				val,
+				path+"="+val,
+				`"`+path+`":`+val,
+				`"`+path+`": `+val,
+			)
+		}
+	}
 }
 
 // Pretty returns indented JSON when the line contained an object.

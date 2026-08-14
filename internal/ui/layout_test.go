@@ -105,8 +105,8 @@ func TestDetailClearsWhenSwitchingJSONToPlain(t *testing.T) {
 	m.cursor = len(m.filtered) - 1
 	m.refreshDetail()
 	full := m.View()
-	if strings.Count(full, "json ·") > 0 && strings.Count(full, "log ·") > 0 {
-		t.Fatalf("both json and log titles visible:\n%s", full)
+	if strings.Contains(full, "[json]") && strings.Contains(full, "[raw]") {
+		t.Fatalf("both [json] and [raw] titles visible:\n%s", full)
 	}
 	body := strings.Join(m.detailLines, "\n")
 	if strings.Contains(body, `"method"`) || strings.Contains(body, "response_code") {
@@ -120,6 +120,42 @@ func TestDetailClearsWhenSwitchingJSONToPlain(t *testing.T) {
 	}
 	if m.detailOff != 0 {
 		t.Fatalf("detail scroll not reset: %d", m.detailOff)
+	}
+}
+
+func TestFollowDoesNotStealDetailScroll(t *testing.T) {
+	m := testModel(140, 40, true, true)
+	m.follow = true
+	m.paused = false
+	m.focus = paneDetail
+	m.cursor = 0
+	m.refreshDetail()
+	held := m.cursor
+	first, _ := m.selected()
+
+	batch := make(LogBatchMsg, 0, 4)
+	for i := 0; i < 4; i++ {
+		line := fmt.Sprintf(`{"method":"GET","x-envoy-origin-path":"/n/%d","response_code":200}`, i)
+		batch = append(batch, source.Event{
+			Namespace: "echo",
+			Pod:       "echo-new",
+			Container: "echo",
+			Line:      line,
+		})
+	}
+	m.ingest(batch)
+	if m.cursor != held {
+		t.Fatalf("follow snapped cursor while detail focused: %d -> %d", held, m.cursor)
+	}
+	got, ok := m.selected()
+	if !ok || got.Ev.Line != first.Ev.Line {
+		t.Fatal("detail selection changed while follow ingested")
+	}
+
+	m.focus = paneLogs
+	m.ingest(batch)
+	if m.cursor != len(m.filtered)-1 {
+		t.Fatalf("log focus should still follow: cursor=%d last=%d", m.cursor, len(m.filtered)-1)
 	}
 }
 
@@ -145,6 +181,29 @@ func TestErrorsStayInBadgeNotFrame(t *testing.T) {
 	}
 	if !strings.Contains(ov, "throttling") {
 		t.Fatal("overlay missing error text")
+	}
+}
+
+func TestPaneKeepsPaintColors(t *testing.T) {
+	m := testModel(80, 24, false, false)
+	body := "\x1b[32mGET\x1b[0m  /ok  \x1b[31m500\x1b[0m"
+	got := m.pane("logs", "", true, 40, 6, body)
+	if !strings.Contains(got, "\x1b[32mGET\x1b[0m") || !strings.Contains(got, "\x1b[31m500\x1b[0m") {
+		t.Fatalf("pane stripped log colors:\n%q", got)
+	}
+}
+
+func TestSkipANSIKeepsColor(t *testing.T) {
+	s := "\x1b[31mGET\x1b[0m  \x1b[32m/very/long/path\x1b[0m"
+	cut := skipANSICells(s, 5)
+	if !strings.Contains(cut, "\x1b[") {
+		t.Fatalf("expected ANSI to survive a horizontal skip: %q", cut)
+	}
+	if strings.Contains(cut, "GET") {
+		t.Fatalf("should have skipped GET: %q", cut)
+	}
+	if !strings.Contains(cut, "/very/long/path") {
+		t.Fatalf("expected remaining path, got %q", cut)
 	}
 }
 
@@ -201,6 +260,68 @@ func TestNamespacePickerFilters(t *testing.T) {
 	}
 	if !strings.Contains(ov, "logs") || !strings.Contains(ov, "all namespaces") {
 		t.Fatalf("picker missing items:\n%s", ov)
+	}
+}
+
+func TestIncludeSeedsLiveFilter(t *testing.T) {
+	const id = "6ef0ac35-0794-46fe-bec6-c6d89a420a29"
+	m := New(Options{Include: id}).(*model)
+	if m.input.Value() != id {
+		t.Fatalf("filter box=%q", m.input.Value())
+	}
+	hit := `{"level":"info","msg":"found","trace_id":"` + id + `"}`
+	miss := `{"level":"info","msg":"nope","trace_id":"other"}`
+	m.ingest(LogBatchMsg{
+		{Namespace: "ns", Pod: "p", Container: "c", Line: hit},
+		{Namespace: "ns", Pod: "p", Container: "c", Line: miss},
+	})
+	if len(m.filtered) != 1 {
+		t.Fatalf("filtered=%d want 1 (uuid include)", len(m.filtered))
+	}
+	if !strings.Contains(m.lines[m.filtered[0]].Ev.Line, id) {
+		t.Fatalf("kept the wrong line: %s", m.lines[m.filtered[0]].Ev.Line)
+	}
+}
+
+func TestProgressCRDoesNotBreakSources(t *testing.T) {
+	m := testModel(140, 40, true, true)
+	progress := "  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\r" +
+		"                                 Dload  Upload   Total   Spent    Left  Speed\r" +
+		"100 35589  0 35589    0     0   847k      0 --:--:-- --:--:-- --:--:--  847k"
+	m.ingest(LogBatchMsg{{
+		Namespace: "prod",
+		Pod:       "sl-openbao-backup-29772830-lw4wc",
+		Container: "awscli",
+		Line:      progress,
+	}})
+	if strings.Contains(m.lines[len(m.lines)-1].Ev.Line, "\r") {
+		t.Fatal("stored line still has carriage return")
+	}
+	v := m.View()
+	if strings.Contains(v, "\r") {
+		t.Fatal("view leaked \\r — would paint over [sources]")
+	}
+	if !strings.Contains(v, "[sources]") {
+		t.Fatalf("missing [sources] after progress line:\n%s", v)
+	}
+	if !strings.Contains(v, "35589") {
+		t.Fatalf("expected last progress snapshot in view:\n%s", v)
+	}
+	if lipgloss.Width(v) > 140 || lipgloss.Height(v) > 40 {
+		t.Fatalf("frame %dx%d after progress line", lipgloss.Width(v), lipgloss.Height(v))
+	}
+}
+
+func TestPaneNamesOnBorder(t *testing.T) {
+	m := testModel(140, 40, true, true)
+	v := m.View()
+	for _, name := range []string{"[sources]", "[logs]"} {
+		if !strings.Contains(v, name) {
+			t.Fatalf("missing %s in:\n%s", name, v)
+		}
+	}
+	if !strings.Contains(v, "[json]") && !strings.Contains(v, "[raw]") {
+		t.Fatalf("missing [json]/[raw] in:\n%s", v)
 	}
 }
 

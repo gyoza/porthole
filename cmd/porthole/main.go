@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/gyoza/porthole/internal/filter"
 	"github.com/gyoza/porthole/internal/source"
 	"github.com/gyoza/porthole/internal/ui"
 )
@@ -25,6 +26,8 @@ type flags struct {
 	selector   string
 	container  string
 	exclude    string
+	include    []string
+	excludeLog []string
 	tail       int64
 	since      time.Duration
 	context    string
@@ -51,6 +54,8 @@ Examples:
   porthole                              # current namespace, every pod
   porthole -n envoy-gateway-system
   porthole -A 'envoy.*'
+  porthole -i '6ef0ac35-0794-46fe-bec6-c6d89a420a29'
+  porthole -i ERROR -e healthz
   porthole -l app=foo -c sidecar
   kubectl logs -f deploy/foo | porthole
 `,
@@ -71,6 +76,8 @@ Examples:
 	root.Flags().BoolVarP(&f.allNS, "all-namespaces", "A", false, "follow pods in all namespaces")
 	root.Flags().StringVarP(&f.selector, "selector", "l", "", "label selector")
 	root.Flags().StringVarP(&f.container, "container", "c", "", "container name regex")
+	root.Flags().StringArrayVarP(&f.include, "include", "i", nil, "only show log lines matching this regex (repeatable)")
+	root.Flags().StringArrayVarP(&f.excludeLog, "exclude", "e", nil, "hide log lines matching this regex (repeatable)")
 	root.Flags().StringVar(&f.exclude, "exclude-container", "", "container name regex to skip")
 	root.Flags().Int64Var(&f.tail, "tail", 200, "lines to start with from each container")
 	root.Flags().DurationVar(&f.since, "since", 0, "show logs newer than a relative duration (e.g. 5m)")
@@ -98,7 +105,15 @@ func run(f flags, query string) error {
 	})
 
 	events := make(chan source.Event, 8192)
-	opts := ui.Options{Query: query}
+	inc, err := filter.Join(f.include)
+	if err != nil {
+		return fmt.Errorf("include: %w", err)
+	}
+	exc, err := filter.Join(f.excludeLog)
+	if err != nil {
+		return fmt.Errorf("exclude: %w", err)
+	}
+	opts := ui.Options{Query: query, Include: inc.Pattern, Exclude: exc.Pattern}
 
 	switch {
 	case f.demo:
