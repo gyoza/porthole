@@ -488,6 +488,7 @@ func (m *model) cyclePane(dir int) {
 
 func (m *model) ingest(batch []source.Event) {
 	for _, ev := range batch {
+		ev.Line = parse.Sanitize(ev.Line)
 		ln := logLine{
 			Ev:     ev,
 			Rec:    parse.Line(ev.Line),

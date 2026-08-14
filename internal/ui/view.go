@@ -77,6 +77,7 @@ func (m *model) pane(name, extra string, active bool, w, h int, body string) str
 	b.WriteString(top)
 	b.WriteByte('\n')
 	for _, line := range lines {
+		line = parse.Sanitize(line)
 		pad := innerW - lipgloss.Width(line)
 		if pad < 0 {
 			line = truncatePlain(line, innerW)

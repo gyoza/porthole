@@ -85,6 +85,7 @@ var (
 
 // Line parses a single raw log line.
 func Line(raw string) Record {
+	raw = Sanitize(raw)
 	rec := Record{Raw: raw, Kind: KindPlain}
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {

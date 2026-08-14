@@ -274,6 +274,35 @@ func TestIncludeSeedsLiveFilter(t *testing.T) {
 	}
 }
 
+func TestProgressCRDoesNotBreakSources(t *testing.T) {
+	m := testModel(140, 40, true, true)
+	progress := "  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\r" +
+		"                                 Dload  Upload   Total   Spent    Left  Speed\r" +
+		"100 35589  0 35589    0     0   847k      0 --:--:-- --:--:-- --:--:--  847k"
+	m.ingest(LogBatchMsg{{
+		Namespace: "prod",
+		Pod:       "sl-openbao-backup-29772830-lw4wc",
+		Container: "awscli",
+		Line:      progress,
+	}})
+	if strings.Contains(m.lines[len(m.lines)-1].Ev.Line, "\r") {
+		t.Fatal("stored line still has carriage return")
+	}
+	v := m.View()
+	if strings.Contains(v, "\r") {
+		t.Fatal("view leaked \\r — would paint over [sources]")
+	}
+	if !strings.Contains(v, "[sources]") {
+		t.Fatalf("missing [sources] after progress line:\n%s", v)
+	}
+	if !strings.Contains(v, "35589") {
+		t.Fatalf("expected last progress snapshot in view:\n%s", v)
+	}
+	if lipgloss.Width(v) > 140 || lipgloss.Height(v) > 40 {
+		t.Fatalf("frame %dx%d after progress line", lipgloss.Width(v), lipgloss.Height(v))
+	}
+}
+
 func TestPaneNamesOnBorder(t *testing.T) {
 	m := testModel(140, 40, true, true)
 	v := m.View()
