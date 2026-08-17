@@ -162,6 +162,23 @@ func TestLogsHideTimestampByDefault(t *testing.T) {
 	}
 }
 
+func TestPlainLineHidesLeadingStamp(t *testing.T) {
+	m := New(Options{}).(*model)
+	m.width, m.height = 140, 40
+	m.showDetail = true
+	m.ingest(LogBatchMsg{{
+		Namespace: "logs", Pod: "chatter-1", Container: "chatter",
+		Line: "Fri, 14 Aug 2026 18:26:46 GMT | [GET] - http://10.244.0.11:80/",
+	}})
+	logs := m.logsView(m.layout())
+	if strings.Contains(logs, "18:26:46") || strings.Contains(logs, "2026") {
+		t.Fatalf("[logs] still has a clock:\n%s", logs)
+	}
+	if !strings.Contains(logs, "[GET]") || !strings.Contains(logs, "10.244.0.11") {
+		t.Fatalf("expected request, got:\n%s", logs)
+	}
+}
+
 func TestFollowDoesNotStealDetailScroll(t *testing.T) {
 	m := testModel(140, 40, true, true)
 	m.follow = true

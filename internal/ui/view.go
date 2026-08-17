@@ -203,11 +203,15 @@ func (m *model) renderLine(ln logLine, width int, selected bool) string {
 	case parse.KindApp:
 		body = paintApp(m.theme, ln.Rec, base, re, m.theme.warn, m.showTime)
 	default:
-		if re != nil && re.MatchString(ln.Rec.Display) {
+		text := ln.Rec.Display
+		if !m.showTime {
+			text = parse.StripLeadingTime(text)
+		}
+		if re != nil && re.MatchString(text) {
 			hi := base.Background(m.theme.warn)
-			body = highlight(ln.Rec.Display, re, base, hi)
+			body = highlight(text, re, base, hi)
 		} else {
-			body = base.Render(ln.Rec.Display)
+			body = base.Render(text)
 		}
 	}
 	if m.logCol > 0 {

@@ -222,9 +222,17 @@ func paintApp(t theme, rec parse.Record, base lipgloss.Style, re *regexp.Regexp,
 		parts = append(parts, paintSeg(pad(rec.Level, 5), t.levelColor(rec.Level), re, hiBg, "level"))
 	}
 	if rec.Message != "" {
-		parts = append(parts, paintSeg(rec.Message, base, re, hiBg, "msg", "message"))
+		msg := rec.Message
+		if !showTime {
+			msg = parse.StripLeadingTime(msg)
+		}
+		parts = append(parts, paintSeg(msg, base, re, hiBg, "msg", "message"))
 	} else {
-		parts = append(parts, paintSeg(rec.Display, base, re, hiBg))
+		disp := rec.Display
+		if !showTime {
+			disp = parse.StripLeadingTime(disp)
+		}
+		parts = append(parts, paintSeg(disp, base, re, hiBg))
 	}
 	return strings.Join(parts, "  ")
 }
