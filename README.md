@@ -58,7 +58,7 @@ porthole --file testdata/mixed.log
 kubectl logs -f deploy/foo | porthole
 ```
 
-`make run-load` is the same 80-pod / 2000 lines-per-second stream. Quiet pods should stay in `[sources]` after the 20k-line ring wraps; progress pods emit curl/awscli `\r` lines.
+`make run-load` is the same 80-pod / 2000 lines-per-second stream. Quiet pods should stay in `[context]` after the 20k-line ring wraps; progress pods emit curl/awscli `\r` lines.
 
 On a cluster (current kube context):
 
@@ -108,7 +108,7 @@ make unload-cluster
 | `t` | Timestamps in `[logs]` (off by default) |
 | `p` | Pause ingest |
 | `d` | Toggle selected-line detail |
-| `s` | Toggle the source list |
+| `s` | Toggle the `[context]` pane |
 | `tab` | Cycle panes |
 | `enter` on a source | Pin the stream to that pod |
 | `e` | Open the error list |

@@ -98,7 +98,7 @@ Examples:
 	root.Flags().BoolVar(&f.demo, "demo", false, "stream mixed fake logs (JSON + plain) without a cluster")
 	root.Flags().IntVar(&f.demoPods, "demo-pods", 0, "unique pods for --demo (default 5)")
 	root.Flags().IntVar(&f.demoRate, "demo-rate", 0, "lines per second for --demo (default 12)")
-	root.Flags().IntVar(&f.demoQuiet, "demo-quiet", 0, "of those pods, emit rarely (stay in [sources] after the ring wraps)")
+	root.Flags().IntVar(&f.demoQuiet, "demo-quiet", 0, "of those pods, emit rarely (stay in [context] after the ring wraps)")
 	root.Flags().IntVar(&f.demoProg, "demo-progress", 0, "pods that emit curl/awscli \\r progress lines")
 	root.Flags().StringVar(&f.file, "file", "", "read a log file instead of the cluster")
 	root.Flags().BoolVar(&f.stdin, "stdin", false, "read log lines from stdin")

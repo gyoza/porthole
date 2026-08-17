@@ -29,10 +29,10 @@ const (
   pgup pgdn    page
   f            follow / unfollow the tail
   p            pause / resume ingest (stop new lines)
-               (unfollow [logs] with f; follow does not steal [json]/[sources])
+               (unfollow [logs] with f; follow does not steal [json]/[context])
   t            timestamps in [logs] (off by default; always on [json]/[raw])
   d            toggle [json]/[raw] pane
-  s            toggle [sources] pane (two panes when --context is repeated)
+  s            toggle [context] pane (two panes when --context is repeated)
   e            view client / tail errors
   n            choose namespace
   ?            this help
@@ -600,7 +600,7 @@ func (m *model) bumpSource(ln logLine) {
 }
 
 // dropSourceLine decrements the in-window count when a line leaves the
-// ring. The source itself stays so [sources] does not forget a pod just
+// ring. The source itself stays so [context] does not forget a pod just
 // because noisier pods pushed its lines out.
 func (m *model) dropSourceLine(ln logLine) {
 	i, ok := m.srcIdx[ln.Source]

@@ -9,7 +9,7 @@ import (
 //
 // curl, awscli, and similar tools rewrite a progress bar with '\r'.
 // If that byte reaches the terminal the cursor jumps to column 0 and
-// paints over [sources]. Tabs also break lipgloss width vs the tty.
+// paints over [context]. Tabs also break lipgloss width vs the tty.
 // SGR color/style sequences (…m) are kept so [logs] paint survives.
 func Sanitize(s string) string {
 	if s == "" || !needsSanitize(s) {

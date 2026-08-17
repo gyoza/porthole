@@ -42,9 +42,9 @@ func Demo(ctx context.Context, out chan<- Event) error {
 }
 
 // DemoWith emits a mixed stream sized for local UI load tests.
-// Every pod is seeded once so [sources] is fully populated, then Rate
+// Every pod is seeded once so [context] is fully populated, then Rate
 // lines/sec are sent. Quiet pods stay almost silent so they fall out of
-// the 20k-line ring while remaining in [sources]. Progress pods emit
+// the 20k-line ring while remaining in [context]. Progress pods emit
 // curl/awscli \r rewrites.
 func DemoWith(ctx context.Context, cfg DemoConfig, out chan<- Event) error {
 	cfg = cfg.norm()
@@ -198,7 +198,7 @@ func shortID(i int) string {
 
 func progressLine(n int) string {
 	// One Event containing \r rewrites — the TUI must keep the last snapshot
-	// and must not paint over [sources].
+	// and must not paint over [context].
 	return fmt.Sprintf(
 		"  %% Total    %% Received %% Xferd  Average Speed   Time    Time     Time  Current\r"+
 			"                                 Dload  Upload   Total   Spent    Left  Speed\r"+

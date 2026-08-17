@@ -272,11 +272,11 @@ func skipANSICells(s string, n int) string {
 func (m *model) sourcesView(ly frame, which int) string {
 	focus := paneSources
 	h, avail, sel := ly.srcH, ly.srcRows, m.srcSel
-	name := "sources"
+	name := "context"
 	list := m.sources
 	if m.dualContext() && which < len(m.opts.Contexts) {
 		ctx := m.opts.Contexts[which]
-		name = "sources · " + ctx
+		name = "context · " + ctx
 		list = m.sourcesFor(ctx)
 		if which == 1 {
 			focus = paneSources2
@@ -423,7 +423,7 @@ func (m *model) filterView() string {
 }
 
 func (m *model) footerText() string {
-	return " / filter   n ns   ←→ scroll   j/k move   f follow   t time   p pause   d detail   s sources   e errors   ? help   q quit"
+	return " / filter   n ns   ←→ scroll   j/k move   f follow   t time   p pause   d detail   s context   e errors   ? help   q quit"
 }
 
 func (m *model) nsView() string {

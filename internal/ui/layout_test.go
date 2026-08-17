@@ -355,10 +355,10 @@ func TestProgressCRDoesNotBreakSources(t *testing.T) {
 	}
 	v := m.View()
 	if strings.Contains(v, "\r") {
-		t.Fatal("view leaked \\r — would paint over [sources]")
+		t.Fatal("view leaked \\r — would paint over [context]")
 	}
-	if !strings.Contains(v, "[sources]") {
-		t.Fatalf("missing [sources] after progress line:\n%s", v)
+	if !strings.Contains(v, "[context]") {
+		t.Fatalf("missing [context] after progress line:\n%s", v)
 	}
 	if !strings.Contains(v, "35589") {
 		t.Fatalf("expected last progress snapshot in view:\n%s", v)
@@ -431,7 +431,7 @@ func TestSourcesSurviveRingWrap(t *testing.T) {
 		ids[s.ID] = s.Count
 	}
 	if _, ok := ids["ns/quiet/c"]; !ok {
-		t.Fatal("quiet pod disappeared from [sources] after the ring wrapped")
+		t.Fatal("quiet pod disappeared from [context] after the ring wrapped")
 	}
 	if ids["ns/quiet/c"] != 0 {
 		t.Fatalf("quiet in-window count=%d want 0", ids["ns/quiet/c"])
@@ -461,7 +461,7 @@ func TestDualContextSources(t *testing.T) {
 		t.Fatalf("dual sources heights %d+%d body=%d", ly.srcH, ly.srcH2, ly.bodyH)
 	}
 	v := m.View()
-	for _, name := range []string{"[sources · prod1]", "[sources · prod2]"} {
+	for _, name := range []string{"[context · prod1]", "[context · prod2]"} {
 		if !strings.Contains(v, name) {
 			t.Fatalf("missing %s in:\n%s", name, v)
 		}
@@ -478,7 +478,7 @@ func TestDualContextSources(t *testing.T) {
 func TestPaneNamesOnBorder(t *testing.T) {
 	m := testModel(140, 40, true, true)
 	v := m.View()
-	for _, name := range []string{"[sources]", "[logs]"} {
+	for _, name := range []string{"[context]", "[logs]"} {
 		if !strings.Contains(v, name) {
 			t.Fatalf("missing %s in:\n%s", name, v)
 		}
