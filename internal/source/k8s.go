@@ -289,7 +289,7 @@ func followContainer(ctx context.Context, cs kubernetes.Interface, ns, pod, cont
 			logOpts.SinceSeconds = &sec
 		}
 
-		opened, err := streamLogs(ctx, cs, ns, pod, container, logOpts, out)
+		opened, err := streamLogs(ctx, cs, ns, pod, container, opts.Context, logOpts, out)
 		if ctx.Err() != nil {
 			return
 		}
@@ -300,7 +300,7 @@ func followContainer(ctx context.Context, cs kubernetes.Interface, ns, pod, cont
 			backoff = time.Second
 		}
 		if err != nil {
-			emitErr(ctx, out, ns+"/"+pod+"/"+container, "stream logs", err)
+			emitErr(ctx, out, eventSrc(opts.Context, ns, pod, container), "stream logs", err)
 		}
 		if !sleepCtx(ctx, backoff) {
 			return
@@ -311,7 +311,7 @@ func followContainer(ctx context.Context, cs kubernetes.Interface, ns, pod, cont
 	}
 }
 
-func streamLogs(ctx context.Context, cs kubernetes.Interface, ns, pod, container string, logOpts *corev1.PodLogOptions, out chan<- Event) (bool, error) {
+func streamLogs(ctx context.Context, cs kubernetes.Interface, ns, pod, container, kubeCtx string, logOpts *corev1.PodLogOptions, out chan<- Event) (bool, error) {
 	stream, err := cs.CoreV1().Pods(ns).GetLogs(pod, logOpts).Stream(ctx)
 	if err != nil {
 		return false, err
@@ -324,6 +324,7 @@ func streamLogs(ctx context.Context, cs kubernetes.Interface, ns, pod, container
 	for sc.Scan() {
 		ev := Event{
 			Time:      time.Now(),
+			Context:   kubeCtx,
 			Namespace: ns,
 			Pod:       pod,
 			Container: container,
@@ -347,13 +348,22 @@ func emitErr(ctx context.Context, out chan<- Event, src, msg string, err error) 
 		Pod:  src,
 		Err:  msg + ": " + err.Error(),
 	}
-	if parts := splitSrc(src); len(parts) == 3 {
+	if parts := splitSrc(src); len(parts) == 4 {
+		ev.Context, ev.Namespace, ev.Pod, ev.Container = parts[0], parts[1], parts[2], parts[3]
+	} else if len(parts) == 3 {
 		ev.Namespace, ev.Pod, ev.Container = parts[0], parts[1], parts[2]
 	}
 	select {
 	case <-ctx.Done():
 	case out <- ev:
 	}
+}
+
+func eventSrc(kubeCtx, ns, pod, container string) string {
+	if kubeCtx != "" {
+		return kubeCtx + "/" + ns + "/" + pod + "/" + container
+	}
+	return ns + "/" + pod + "/" + container
 }
 
 func splitSrc(s string) []string {

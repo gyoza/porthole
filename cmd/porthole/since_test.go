@@ -41,6 +41,23 @@ func TestParseSince(t *testing.T) {
 	}
 }
 
+func TestParseContexts(t *testing.T) {
+	got, err := parseContexts([]string{"prod1", "prod2"})
+	if err != nil || len(got) != 2 || got[0] != "prod1" || got[1] != "prod2" {
+		t.Fatalf("got=%v err=%v", got, err)
+	}
+	if _, err := parseContexts([]string{"prod1", "prod1"}); err == nil {
+		t.Fatal("expected duplicate error")
+	}
+	if _, err := parseContexts([]string{"a", "b", "c"}); err == nil {
+		t.Fatal("expected more-than-two error")
+	}
+	got, err = parseContexts(nil)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty=%v err=%v", got, err)
+	}
+}
+
 func TestSinceCLI(t *testing.T) {
 	cases := []struct {
 		args []string

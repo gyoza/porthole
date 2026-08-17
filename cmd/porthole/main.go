@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/gyoza/porthole/internal/filter"
 	"github.com/gyoza/porthole/internal/source"
 	"github.com/gyoza/porthole/internal/ui"
+	"k8s.io/client-go/kubernetes"
 )
 
 var version = "0.0.1"
@@ -30,7 +33,7 @@ type flags struct {
 	excludeLog []string
 	tail       int64
 	since      time.Duration
-	context    string
+	contexts   []string
 	kubeconfig string
 	demo       bool
 	demoPods   int
@@ -39,6 +42,7 @@ type flags struct {
 	demoProg   int
 	file       string
 	stdin      bool
+	timestamps bool
 }
 
 func main() {
@@ -63,6 +67,7 @@ Examples:
   porthole -s5m
   porthole -s1d
   porthole -l app=foo -c sidecar
+  porthole --context prod1 --context prod2
   porthole --demo --demo-pods 80 --demo-rate 2000
   kubectl logs -f deploy/foo | porthole
 `,
@@ -88,7 +93,7 @@ Examples:
 	root.Flags().StringVar(&f.exclude, "exclude-container", "", "container name regex to skip")
 	root.Flags().Int64Var(&f.tail, "tail", 200, "lines to start with from each container")
 	root.Flags().VarP(newSinceValue(&f.since), "since", "s", "show logs newer than a relative duration (5s, 5m, 1h, 1d)")
-	root.Flags().StringVar(&f.context, "context", "", "kubeconfig context")
+	root.Flags().StringArrayVar(&f.contexts, "context", nil, "kubeconfig context (repeat once for a second cluster)")
 	root.Flags().StringVar(&f.kubeconfig, "kubeconfig", "", "path to kubeconfig")
 	root.Flags().BoolVar(&f.demo, "demo", false, "stream mixed fake logs (JSON + plain) without a cluster")
 	root.Flags().IntVar(&f.demoPods, "demo-pods", 0, "unique pods for --demo (default 5)")
@@ -97,6 +102,7 @@ Examples:
 	root.Flags().IntVar(&f.demoProg, "demo-progress", 0, "pods that emit curl/awscli \\r progress lines")
 	root.Flags().StringVar(&f.file, "file", "", "read a log file instead of the cluster")
 	root.Flags().BoolVar(&f.stdin, "stdin", false, "read log lines from stdin")
+	root.Flags().BoolVarP(&f.timestamps, "timestamps", "t", false, "show parsed timestamps in [logs] (off by default; always on [json]/[raw])")
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -124,7 +130,7 @@ func run(f flags, query string) error {
 	if err != nil {
 		return fmt.Errorf("exclude: %w", err)
 	}
-	opts := ui.Options{Query: query, Include: inc.Pattern, Exclude: exc.Pattern}
+	opts := ui.Options{Query: query, Include: inc.Pattern, Exclude: exc.Pattern, ShowTime: f.timestamps}
 
 	if f.demoPods > 0 || f.demoRate > 0 || f.demoQuiet > 0 || f.demoProg > 0 {
 		f.demo = true
@@ -164,104 +170,15 @@ func run(f flags, query string) error {
 			_ = source.ReadLines(ctx, os.Stdin, source.ReaderConfig{Name: "stdin", Pod: "stdin"}, events)
 		}()
 	default:
-		podRe, err := regexp.Compile(query)
-		if err != nil {
-			return fmt.Errorf("pod query: %w", err)
-		}
-		kopts := source.KubeOptions{
-			Kubeconfig: f.kubeconfig,
-			Context:    f.context,
-			Namespace:  f.namespace,
-			AllNS:      f.allNS,
-			Selector:   f.selector,
-			PodQuery:   podRe,
-			TailLines:  f.tail,
-			Since:      f.since,
-		}
-		if f.container != "" {
-			re, err := regexp.Compile(f.container)
-			if err != nil {
-				return fmt.Errorf("container regex: %w", err)
-			}
-			kopts.Container = re
-		}
-		if f.exclude != "" {
-			re, err := regexp.Compile(f.exclude)
-			if err != nil {
-				return fmt.Errorf("exclude-container regex: %w", err)
-			}
-			kopts.Exclude = re
-		}
-		cs, ns, err := source.BuildClient(kopts)
+		uiOpts, err := startKubeTails(ctx, f, query, events)
 		if err != nil {
 			return err
 		}
-		opts.Namespace = ns
-		opts.Context = source.CurrentContext(f.kubeconfig, f.context)
-		opts.Namespaces = source.ListNamespaces(ctx, cs)
-		watchNS := ns
-		if f.allNS {
-			watchNS = ""
-			opts.Namespace = "*"
-		}
-		switchCh := make(chan string, 1)
-		opts.SwitchNS = func(target string) {
-			select {
-			case switchCh <- target:
-			default:
-				select {
-				case <-switchCh:
-				default:
-				}
-				select {
-				case switchCh <- target:
-				default:
-				}
-			}
-		}
-		go func() {
-			defer close(events)
-			current := watchNS
-			for {
-				tctx, tcancel := context.WithCancel(ctx)
-				done := make(chan error, 1)
-				tkopts := kopts
-				tkopts.Namespace = current
-				tkopts.AllNS = current == ""
-				go func() {
-					done <- source.TailPods(tctx, cs, current, tkopts, events)
-				}()
-				select {
-				case <-ctx.Done():
-					tcancel()
-					return
-				case next := <-switchCh:
-					tcancel()
-					<-done
-					current = next
-				case err := <-done:
-					tcancel()
-					if ctx.Err() != nil {
-						return
-					}
-					if err != nil {
-						events <- source.Event{
-							Time: time.Now(),
-							Pod:  "porthole",
-							Err:  "tail failed: " + err.Error(),
-						}
-					}
-					select {
-					case <-ctx.Done():
-						return
-					case next := <-switchCh:
-						current = next
-					case <-time.After(2 * time.Second):
-						// retry same target
-					}
-				}
-			}
-		}()
+		opts.Namespace = uiOpts.Namespace
+		opts.Context = uiOpts.Context
+		opts.Contexts = uiOpts.Contexts
+		opts.Namespaces = uiOpts.Namespaces
+		opts.SwitchNS = uiOpts.SwitchNS
 	}
 
 	prog := tea.NewProgram(
@@ -313,6 +230,220 @@ func pump(ctx context.Context, events <-chan source.Event, klogCh <-chan string,
 			prog.Send(ui.StatusErrMsg{Time: time.Now(), Text: line})
 		case <-ticker.C:
 			flush()
+		}
+	}
+}
+
+func parseContexts(in []string) ([]string, error) {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, c := range in {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if _, ok := seen[c]; ok {
+			return nil, fmt.Errorf("duplicate --context %q", c)
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	if len(out) > 2 {
+		return nil, fmt.Errorf("--context can be given at most twice (got %d)", len(out))
+	}
+	return out, nil
+}
+
+func startKubeTails(ctx context.Context, f flags, query string, events chan<- source.Event) (ui.Options, error) {
+	names, err := parseContexts(f.contexts)
+	if err != nil {
+		return ui.Options{}, err
+	}
+	podRe, err := regexp.Compile(query)
+	if err != nil {
+		return ui.Options{}, fmt.Errorf("pod query: %w", err)
+	}
+	base := source.KubeOptions{
+		Kubeconfig: f.kubeconfig,
+		Namespace:  f.namespace,
+		AllNS:      f.allNS,
+		Selector:   f.selector,
+		PodQuery:   podRe,
+		TailLines:  f.tail,
+		Since:      f.since,
+	}
+	if f.container != "" {
+		re, err := regexp.Compile(f.container)
+		if err != nil {
+			return ui.Options{}, fmt.Errorf("container regex: %w", err)
+		}
+		base.Container = re
+	}
+	if f.exclude != "" {
+		re, err := regexp.Compile(f.exclude)
+		if err != nil {
+			return ui.Options{}, fmt.Errorf("exclude-container regex: %w", err)
+		}
+		base.Exclude = re
+	}
+	if len(names) == 0 {
+		names = []string{""}
+	}
+
+	type built struct {
+		name     string
+		cs       kubernetes.Interface
+		watchNS  string
+		ns       string
+		opts     source.KubeOptions
+		switchCh chan string
+	}
+	var tails []built
+	resolved := make([]string, 0, len(names))
+	nsSeen := map[string]struct{}{}
+	var nsList []string
+	var watchNS0 string
+
+	for _, cname := range names {
+		opts := base
+		opts.Context = cname
+		cs, ns, err := source.BuildClient(opts)
+		if err != nil {
+			if cname != "" {
+				return ui.Options{}, fmt.Errorf("context %s: %w", cname, err)
+			}
+			return ui.Options{}, err
+		}
+		got := source.CurrentContext(f.kubeconfig, cname)
+		if got == "" {
+			got = cname
+		}
+		if got == "" {
+			got = "cluster"
+		}
+		opts.Context = got
+		watchNS := ns
+		if f.allNS {
+			watchNS = ""
+		}
+		if watchNS0 == "" && watchNS != "" {
+			watchNS0 = watchNS
+		}
+		for _, n := range source.ListNamespaces(ctx, cs) {
+			if _, ok := nsSeen[n]; ok {
+				continue
+			}
+			nsSeen[n] = struct{}{}
+			nsList = append(nsList, n)
+		}
+		tails = append(tails, built{
+			name:     got,
+			cs:       cs,
+			watchNS:  watchNS,
+			ns:       ns,
+			opts:     opts,
+			switchCh: make(chan string, 1),
+		})
+		resolved = append(resolved, got)
+	}
+
+	if len(resolved) == 2 && resolved[0] == resolved[1] {
+		return ui.Options{}, fmt.Errorf("duplicate --context %q", resolved[0])
+	}
+
+	uiOpts := ui.Options{
+		Contexts:   resolved,
+		Context:    strings.Join(resolved, ","),
+		Namespaces: nsList,
+	}
+	if f.allNS {
+		uiOpts.Namespace = "*"
+	} else if f.namespace != "" {
+		uiOpts.Namespace = f.namespace
+	} else if watchNS0 != "" {
+		uiOpts.Namespace = watchNS0
+	}
+
+	var wg sync.WaitGroup
+	for i := range tails {
+		wg.Add(1)
+		t := tails[i]
+		go func() {
+			defer wg.Done()
+			runOneTail(ctx, t.cs, t.watchNS, t.opts, t.switchCh, events)
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(events)
+	}()
+
+	uiOpts.SwitchNS = func(target string) {
+		for _, t := range tails {
+			trySendNS(t.switchCh, target)
+		}
+	}
+	return uiOpts, nil
+}
+
+func trySendNS(ch chan string, target string) {
+	select {
+	case ch <- target:
+	default:
+		select {
+		case <-ch:
+		default:
+		}
+		select {
+		case ch <- target:
+		default:
+		}
+	}
+}
+
+func runOneTail(ctx context.Context, cs kubernetes.Interface, watchNS string, opts source.KubeOptions, switchCh <-chan string, events chan<- source.Event) {
+	current := watchNS
+	for {
+		tctx, tcancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		tkopts := opts
+		tkopts.Namespace = current
+		tkopts.AllNS = current == ""
+		go func() {
+			done <- source.TailPods(tctx, cs, current, tkopts, events)
+		}()
+		select {
+		case <-ctx.Done():
+			tcancel()
+			return
+		case next := <-switchCh:
+			tcancel()
+			<-done
+			current = next
+		case err := <-done:
+			tcancel()
+			if ctx.Err() != nil {
+				return
+			}
+			if err != nil {
+				label := opts.Context
+				if label == "" {
+					label = "porthole"
+				}
+				events <- source.Event{
+					Time:    time.Now(),
+					Context: opts.Context,
+					Pod:     label,
+					Err:     "tail failed: " + err.Error(),
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case next := <-switchCh:
+				current = next
+			case <-time.After(2 * time.Second):
+			}
 		}
 	}
 }

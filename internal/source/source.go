@@ -17,6 +17,7 @@ import (
 // If Err is set, this is a status/error notice, not a log line.
 type Event struct {
 	Time      time.Time
+	Context   string
 	Namespace string
 	Pod       string
 	Container string
@@ -24,9 +25,13 @@ type Event struct {
 	Err       string
 }
 
-// SourceID is the short "ns/pod/container" label used in the TUI.
+// SourceID is the short label used in the TUI.
+// Kubernetes lines are "ctx/ns/pod/container" so two clusters cannot collide.
 func (e Event) SourceID() string {
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 4)
+	if e.Context != "" {
+		parts = append(parts, e.Context)
+	}
 	if e.Namespace != "" {
 		parts = append(parts, e.Namespace)
 	}
@@ -45,10 +50,14 @@ func (e Event) SourceID() string {
 // ColorSeed is a stable key for assigning a pod color.
 func (e Event) ColorSeed() string {
 	if e.Pod != "" {
-		if e.Namespace != "" {
+		switch {
+		case e.Context != "" && e.Namespace != "":
+			return e.Context + "/" + e.Namespace + "/" + e.Pod
+		case e.Namespace != "":
 			return e.Namespace + "/" + e.Pod
+		default:
+			return e.Pod
 		}
-		return e.Pod
 	}
 	return e.SourceID()
 }

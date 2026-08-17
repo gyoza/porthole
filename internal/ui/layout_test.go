@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/gyoza/porthole/internal/parse"
@@ -120,6 +121,44 @@ func TestDetailClearsWhenSwitchingJSONToPlain(t *testing.T) {
 	}
 	if m.detailOff != 0 {
 		t.Fatalf("detail scroll not reset: %d", m.detailOff)
+	}
+}
+
+func TestFollowKeyToggles(t *testing.T) {
+	m := testModel(140, 40, true, true)
+	m.follow = true
+	m.focus = paneLogs
+	m.cursor = 0
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if m.follow {
+		t.Fatal("f should unfollow")
+	}
+	if m.cursor != 0 {
+		t.Fatalf("unfollow should not jump, cursor=%d", m.cursor)
+	}
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if !m.follow {
+		t.Fatal("f again should follow")
+	}
+	if m.cursor != len(m.filtered)-1 {
+		t.Fatalf("follow should jump to tail, cursor=%d last=%d", m.cursor, len(m.filtered)-1)
+	}
+}
+
+func TestLogsHideTimestampByDefault(t *testing.T) {
+	m := testModel(140, 40, true, true)
+	ly := m.layout()
+	logs := m.logsView(ly)
+	if strings.Contains(logs, "03:47:10") {
+		t.Fatalf("[logs] should hide parsed clock by default:\n%s", logs)
+	}
+	det := m.detailView(ly)
+	if !strings.Contains(det, "03:47:10") {
+		t.Fatalf("[json]/[raw] title should still show the clock:\n%s", det)
+	}
+	m.showTime = true
+	if !strings.Contains(m.logsView(ly), "03:47:10") {
+		t.Fatal("t / --timestamps should show clock in [logs]")
 	}
 }
 
@@ -388,6 +427,34 @@ func TestSourcesSurviveRingWrap(t *testing.T) {
 	}
 	if m.sources[0].ID != "ns/quiet/c" || m.sources[1].ID != "ns/noisy/c" {
 		t.Fatalf("source order shuffled: %+v", m.sources)
+	}
+}
+
+func TestDualContextSources(t *testing.T) {
+	m := New(Options{Contexts: []string{"prod1", "prod2"}}).(*model)
+	m.width, m.height = 140, 40
+	m.showSources = true
+	m.showDetail = true
+	m.ingest(LogBatchMsg{
+		{Context: "prod1", Namespace: "ns", Pod: "nginx-a", Container: "nginx", Line: `{"msg":"one"}`},
+		{Context: "prod2", Namespace: "ns", Pod: "nginx-b", Container: "nginx", Line: `{"msg":"two"}`},
+	})
+	ly := m.layout()
+	if ly.srcH2 == 0 || ly.srcH+ly.srcH2 != ly.bodyH {
+		t.Fatalf("dual sources heights %d+%d body=%d", ly.srcH, ly.srcH2, ly.bodyH)
+	}
+	v := m.View()
+	for _, name := range []string{"[sources · prod1]", "[sources · prod2]"} {
+		if !strings.Contains(v, name) {
+			t.Fatalf("missing %s in:\n%s", name, v)
+		}
+	}
+	logs := m.logsView(ly)
+	if !strings.Contains(logs, "prod1") || !strings.Contains(logs, "prod2") {
+		t.Fatalf("[logs] should prefix context:\n%s", logs)
+	}
+	if !strings.Contains(logs, "nginx-a") || !strings.Contains(logs, "nginx-b") {
+		t.Fatalf("[logs] missing pods:\n%s", logs)
 	}
 }
 

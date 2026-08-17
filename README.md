@@ -43,6 +43,7 @@ porthole -A 'envoy.*|nginx|chatter'
 porthole -i '6ef0ac35-0794-46fe-bec6-c6d89a420a29'
 porthole -i ERROR -e healthz
 porthole -l app=foo -c sidecar
+porthole --context prod1 --context prod2
 porthole -s5m
 porthole -s1d --tail 500
 porthole --since 10m --tail 500
@@ -83,7 +84,7 @@ make unload-cluster
 | `--exclude-container` | Container name regex to skip |
 | `--tail` | Lines to start with from each container (default 200) |
 | `-s`, `--since` | Only logs newer than a duration (`5s`, `5m`, `1h`, `1d`) |
-| `--context` | kubeconfig context |
+| `--context` | kubeconfig context (repeat once for a second cluster) |
 | `--kubeconfig` | Path to kubeconfig |
 | `--demo` | Generated mixed logs, no cluster |
 | `--demo-pods` | Unique pods in `--demo` (default 5) |
@@ -92,6 +93,7 @@ make unload-cluster
 | `--demo-progress` | Pods that emit curl/awscli `\r` progress |
 | `--file` | Read a file instead of the cluster |
 | `--stdin` | Read stdin (also used automatically when piped) |
+| `-t`, `--timestamps` | Show parsed clocks in `[logs]` (off by default; `[json]`/`[raw]` always has them) |
 
 ### Keys
 
@@ -102,7 +104,8 @@ make unload-cluster
 | `n` | Namespace picker (always available) |
 | `j` `k` / arrows | Move the selected line |
 | `g` / `G` | Top / bottom |
-| `f` | Follow the tail |
+| `f` | Follow / unfollow the tail |
+| `t` | Timestamps in `[logs]` (off by default) |
 | `p` | Pause ingest |
 | `d` | Toggle selected-line detail |
 | `s` | Toggle the source list |

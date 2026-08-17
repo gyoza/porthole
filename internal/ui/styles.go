@@ -184,9 +184,9 @@ func paintSeg(plain string, st lipgloss.Style, re *regexp.Regexp, hiBg lipgloss.
 	return st.Render(plain)
 }
 
-func paintHTTP(t theme, rec parse.Record, base lipgloss.Style, re *regexp.Regexp, hiBg lipgloss.Color) string {
+func paintHTTP(t theme, rec parse.Record, base lipgloss.Style, re *regexp.Regexp, hiBg lipgloss.Color, showTime bool) string {
 	parts := make([]string, 0, 8)
-	if !rec.Timestamp.IsZero() {
+	if showTime && !rec.Timestamp.IsZero() {
 		ts := rec.Timestamp.Format("15:04:05.000")
 		parts = append(parts, paintSeg(ts, t.dim(), re, hiBg, "start_time", "ts", "time"))
 	}
@@ -212,9 +212,9 @@ func paintHTTP(t theme, rec parse.Record, base lipgloss.Style, re *regexp.Regexp
 	return strings.Join(parts, "  ")
 }
 
-func paintApp(t theme, rec parse.Record, base lipgloss.Style, re *regexp.Regexp, hiBg lipgloss.Color) string {
+func paintApp(t theme, rec parse.Record, base lipgloss.Style, re *regexp.Regexp, hiBg lipgloss.Color, showTime bool) string {
 	parts := make([]string, 0, 6)
-	if !rec.Timestamp.IsZero() {
+	if showTime && !rec.Timestamp.IsZero() {
 		ts := rec.Timestamp.Format("15:04:05.000")
 		parts = append(parts, paintSeg(ts, t.dim(), re, hiBg, "ts", "time"))
 	}
