@@ -198,17 +198,16 @@ func (m *model) renderLine(ln logLine, width int, selected bool) string {
 	var body string
 	switch ln.Rec.Kind {
 	case parse.KindHTTP:
-		body = paintHTTP(m.theme, ln.Rec, base, re, m.theme.warn, m.showTime)
+		body = paintHTTP(m.theme, ln.Rec, base, re, m.showTime)
 	case parse.KindApp:
-		body = paintApp(m.theme, ln.Rec, base, re, m.theme.warn, m.showTime)
+		body = paintApp(m.theme, ln.Rec, base, re, m.showTime)
 	default:
 		text := ln.Rec.Display
 		if !m.showTime {
 			text = parse.StripLeadingTime(text)
 		}
 		if re != nil && re.MatchString(text) {
-			hi := base.Background(m.theme.warn)
-			body = highlight(text, re, base, hi)
+			body = highlight(text, re, base, m.theme.match())
 		} else {
 			body = base.Render(text)
 		}

@@ -249,6 +249,26 @@ func TestPaneKeepsPaintColors(t *testing.T) {
 	}
 }
 
+func TestRegexMatchHasDarkOnGold(t *testing.T) {
+	st := defaultTheme().match()
+	got := st.Render("500")
+	if !strings.Contains(got, "500") {
+		t.Fatalf("match style dropped text: %q", got)
+	}
+	// lipgloss only emits CSI when it thinks the output is a TTY;
+	// the important contract is we do not inherit muted grey onto gold.
+	th := defaultTheme()
+	if st.GetForeground() == th.muted {
+		t.Fatal("match fg must not be muted grey")
+	}
+	if st.GetForeground() != th.matchFg {
+		t.Fatalf("match fg=%v want %v", st.GetForeground(), th.matchFg)
+	}
+	if st.GetBackground() != th.matchBg {
+		t.Fatalf("match bg=%v want %v", st.GetBackground(), th.matchBg)
+	}
+}
+
 func TestSkipANSIKeepsColor(t *testing.T) {
 	s := "\x1b[31mGET\x1b[0m  \x1b[32m/very/long/path\x1b[0m"
 	cut := skipANSICells(s, 5)
