@@ -189,8 +189,7 @@ func (m *model) renderLine(ln logLine, width int, selected bool) string {
 		srcSt = srcSt.Background(m.theme.selBg)
 	}
 	label := fmt.Sprintf("%-22s", truncate(src, 22))
-	if m.dualContext() {
-		ctx := sourceContext(ln.Source)
+	if ctx := m.lineContext(ln); ctx != "" {
 		label = fmt.Sprintf("%-8s %-16s", truncate(ctx, 8), truncate(src, 16))
 	}
 	prefix := srcSt.Render(label)
@@ -272,12 +271,10 @@ func skipANSICells(s string, n int) string {
 func (m *model) sourcesView(ly frame, which int) string {
 	focus := paneSources
 	h, avail, sel := ly.srcH, ly.srcRows, m.srcSel
-	name := "context"
+	name := m.contextPaneName(which)
 	list := m.sources
 	if m.dualContext() && which < len(m.opts.Contexts) {
-		ctx := m.opts.Contexts[which]
-		name = "context · " + ctx
-		list = m.sourcesFor(ctx)
+		list = m.sourcesFor(m.opts.Contexts[which])
 		if which == 1 {
 			focus = paneSources2
 			h, avail, sel = ly.srcH2, ly.srcRows2, m.srcSel2
@@ -507,6 +504,33 @@ func (m *model) helpView() string {
 		Width(min(72, m.width-4)).
 		Render(helpText)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+func (m *model) contextPaneName(which int) string {
+	if name := m.contextName(which); name != "" {
+		return "context · " + name
+	}
+	return "context"
+}
+
+func (m *model) contextName(which int) string {
+	if which >= 0 && which < len(m.opts.Contexts) && m.opts.Contexts[which] != "" {
+		return m.opts.Contexts[which]
+	}
+	if which == 0 && m.opts.Context != "" && !strings.Contains(m.opts.Context, ",") {
+		return m.opts.Context
+	}
+	return ""
+}
+
+func (m *model) lineContext(ln logLine) string {
+	if ln.Ev.Context != "" {
+		return ln.Ev.Context
+	}
+	if len(m.opts.Contexts) == 0 {
+		return ""
+	}
+	return sourceContext(ln.Source)
 }
 
 func sourceContext(id string) string {

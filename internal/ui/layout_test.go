@@ -475,6 +475,28 @@ func TestDualContextSources(t *testing.T) {
 	}
 }
 
+func TestSingleContextNamedOnBorder(t *testing.T) {
+	m := New(Options{Context: "prod", Contexts: []string{"prod"}}).(*model)
+	m.width, m.height = 140, 40
+	m.showSources = true
+	m.showDetail = true
+	m.ingest(LogBatchMsg{{
+		Context: "prod", Namespace: "ns", Pod: "nginx-a", Container: "nginx",
+		Line: `{"msg":"one"}`,
+	}})
+	v := m.View()
+	if !strings.Contains(v, "[context · prod]") {
+		t.Fatalf("single context should name the pane:\n%s", v)
+	}
+	if strings.Contains(v, "[context]") && !strings.Contains(v, "[context · prod]") {
+		t.Fatal("bare [context] without the name")
+	}
+	logs := m.logsView(m.layout())
+	if !strings.Contains(logs, "prod") {
+		t.Fatalf("[logs] should prefix the context:\n%s", logs)
+	}
+}
+
 func TestPaneNamesOnBorder(t *testing.T) {
 	m := testModel(140, 40, true, true)
 	v := m.View()
