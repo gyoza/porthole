@@ -122,7 +122,7 @@ func (m *model) headerView() string {
 		label += "  e"
 		right = m.theme.error().Bold(true).Render(label)
 	} else if m.copiedN > 0 && time.Since(m.copiedAt) < 2500*time.Millisecond {
-		right = m.theme.okStyle().Render(fmt.Sprintf("copied %dB  c", m.copiedN))
+		right = m.theme.okStyle().Render(fmt.Sprintf("copied %dB  y", m.copiedN))
 	}
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
@@ -422,7 +422,7 @@ func (m *model) filterView() string {
 }
 
 func (m *model) footerText() string {
-	return " / filter   n ns   ←→ scroll   j/k move   c copy   f follow   t time   p pause   d detail   s context   e errors   ? help   q quit"
+	return " / filter   n ns   ←→ scroll   j/k move   y copy   f follow   t time   p pause   d detail   s context   e errors   ? help   q quit"
 }
 
 func (m *model) nsView() string {
