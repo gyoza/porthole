@@ -184,6 +184,7 @@ func run(f flags, query string) error {
 	prog := tea.NewProgram(
 		ui.New(opts),
 		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
 	)
 
 	go pump(ctx, events, klogCh, prog)
