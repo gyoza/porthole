@@ -48,3 +48,25 @@ curl -H 'Host: nginx.local' http://172.16.0.240/nope   # 404 + nginx error line
 # one stream — JSON and plain mixed, no format flag
 ./bin/porthole -A
 ```
+
+## Load / lots of pods
+
+No Gateway required. Applies `noise` with 24 noisy chatter pods, 8 quiet heartbeats, and 2 awscli-style `\r` progress pods.
+
+```bash
+kubectl apply -f hack/cluster/noise.yaml
+# or
+make load-cluster
+
+./bin/porthole -n noise
+
+kubectl -n noise scale deploy/noisy --replicas=40
+make unload-cluster
+```
+
+For the same stress without a cluster:
+
+```bash
+make run-load
+# porthole --demo --demo-pods 80 --demo-rate 2000 --demo-quiet 10 --demo-progress 2
+```

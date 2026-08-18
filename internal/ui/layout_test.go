@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/gyoza/porthole/internal/parse"
@@ -123,6 +124,61 @@ func TestDetailClearsWhenSwitchingJSONToPlain(t *testing.T) {
 	}
 }
 
+func TestFollowKeyToggles(t *testing.T) {
+	m := testModel(140, 40, true, true)
+	m.follow = true
+	m.focus = paneLogs
+	m.cursor = 0
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if m.follow {
+		t.Fatal("f should unfollow")
+	}
+	if m.cursor != 0 {
+		t.Fatalf("unfollow should not jump, cursor=%d", m.cursor)
+	}
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if !m.follow {
+		t.Fatal("f again should follow")
+	}
+	if m.cursor != len(m.filtered)-1 {
+		t.Fatalf("follow should jump to tail, cursor=%d last=%d", m.cursor, len(m.filtered)-1)
+	}
+}
+
+func TestLogsHideTimestampByDefault(t *testing.T) {
+	m := testModel(140, 40, true, true)
+	ly := m.layout()
+	logs := m.logsView(ly)
+	if strings.Contains(logs, "03:47:10") {
+		t.Fatalf("[logs] should hide parsed clock by default:\n%s", logs)
+	}
+	det := m.detailView(ly)
+	if !strings.Contains(det, "03:47:10") {
+		t.Fatalf("[json]/[raw] title should still show the clock:\n%s", det)
+	}
+	m.showTime = true
+	if !strings.Contains(m.logsView(ly), "03:47:10") {
+		t.Fatal("t / --timestamps should show clock in [logs]")
+	}
+}
+
+func TestPlainLineHidesLeadingStamp(t *testing.T) {
+	m := New(Options{}).(*model)
+	m.width, m.height = 140, 40
+	m.showDetail = true
+	m.ingest(LogBatchMsg{{
+		Namespace: "logs", Pod: "chatter-1", Container: "chatter",
+		Line: "Fri, 14 Aug 2026 18:26:46 GMT | [GET] - http://10.244.0.11:80/",
+	}})
+	logs := m.logsView(m.layout())
+	if strings.Contains(logs, "18:26:46") || strings.Contains(logs, "2026") {
+		t.Fatalf("[logs] still has a clock:\n%s", logs)
+	}
+	if !strings.Contains(logs, "[GET]") || !strings.Contains(logs, "10.244.0.11") {
+		t.Fatalf("expected request, got:\n%s", logs)
+	}
+}
+
 func TestFollowDoesNotStealDetailScroll(t *testing.T) {
 	m := testModel(140, 40, true, true)
 	m.follow = true
@@ -190,6 +246,37 @@ func TestPaneKeepsPaintColors(t *testing.T) {
 	got := m.pane("logs", "", true, 40, 6, body)
 	if !strings.Contains(got, "\x1b[32mGET\x1b[0m") || !strings.Contains(got, "\x1b[31m500\x1b[0m") {
 		t.Fatalf("pane stripped log colors:\n%q", got)
+	}
+}
+
+func TestSelectedCopyUsesPretty(t *testing.T) {
+	m := testModel(140, 40, true, true)
+	text, ok := m.selectedCopy()
+	if !ok {
+		t.Fatal("expected a selected line")
+	}
+	if !strings.Contains(text, `"method"`) && !strings.Contains(text, "GET") {
+		t.Fatalf("copy text should be raw/pretty JSON, got %q", text[:min(80, len(text))])
+	}
+}
+
+func TestRegexMatchHasDarkOnGold(t *testing.T) {
+	st := defaultTheme().match()
+	got := st.Render("500")
+	if !strings.Contains(got, "500") {
+		t.Fatalf("match style dropped text: %q", got)
+	}
+	// lipgloss only emits CSI when it thinks the output is a TTY;
+	// the important contract is we do not inherit muted grey onto gold.
+	th := defaultTheme()
+	if st.GetForeground() == th.muted {
+		t.Fatal("match fg must not be muted grey")
+	}
+	if st.GetForeground() != th.matchFg {
+		t.Fatalf("match fg=%v want %v", st.GetForeground(), th.matchFg)
+	}
+	if st.GetBackground() != th.matchBg {
+		t.Fatalf("match bg=%v want %v", st.GetBackground(), th.matchBg)
 	}
 }
 
@@ -299,10 +386,10 @@ func TestProgressCRDoesNotBreakSources(t *testing.T) {
 	}
 	v := m.View()
 	if strings.Contains(v, "\r") {
-		t.Fatal("view leaked \\r — would paint over [sources]")
+		t.Fatal("view leaked \\r — would paint over [context]")
 	}
-	if !strings.Contains(v, "[sources]") {
-		t.Fatalf("missing [sources] after progress line:\n%s", v)
+	if !strings.Contains(v, "[context]") {
+		t.Fatalf("missing [context] after progress line:\n%s", v)
 	}
 	if !strings.Contains(v, "35589") {
 		t.Fatalf("expected last progress snapshot in view:\n%s", v)
@@ -312,10 +399,139 @@ func TestProgressCRDoesNotBreakSources(t *testing.T) {
 	}
 }
 
+func TestRingBufferDoesNotPanicOnOverflow(t *testing.T) {
+	m := New(Options{Include: "keep"}).(*model)
+	m.width, m.height = 120, 40
+	m.showDetail = true
+	m.follow = false
+	m.focus = paneDetail
+
+	flush := func(batch []source.Event) {
+		if len(batch) > 0 {
+			m.ingest(batch)
+		}
+	}
+	var batch []source.Event
+	for i := 0; i < maxLines+80; i++ {
+		line := "other"
+		if i%17 == 0 {
+			line = fmt.Sprintf("keep %d", i)
+		}
+		batch = append(batch, source.Event{
+			Namespace: "ns", Pod: "p", Container: "c",
+			Line: line,
+		})
+		if len(batch) == 64 {
+			flush(batch)
+			batch = batch[:0]
+		}
+	}
+	flush(batch)
+	if len(m.lines) > maxLines {
+		t.Fatalf("lines=%d want <= %d", len(m.lines), maxLines)
+	}
+	if _, ok := m.selected(); ok {
+		if m.filtered[m.cursor] >= len(m.lines) {
+			t.Fatalf("stale filter index %d len=%d", m.filtered[m.cursor], len(m.lines))
+		}
+	}
+	_ = m.View()
+}
+
+func TestSourcesSurviveRingWrap(t *testing.T) {
+	m := New(Options{}).(*model)
+	m.width, m.height = 120, 40
+	quiet := source.Event{Namespace: "ns", Pod: "quiet", Container: "c", Line: "hello from quiet"}
+	m.ingest(LogBatchMsg{quiet, quiet})
+	var batch []source.Event
+	for i := 0; i < maxLines+20; i++ {
+		batch = append(batch, source.Event{
+			Namespace: "ns", Pod: "noisy", Container: "c",
+			Line: fmt.Sprintf("n %d", i),
+		})
+		if len(batch) == 64 {
+			m.ingest(batch)
+			batch = batch[:0]
+		}
+	}
+	if len(batch) > 0 {
+		m.ingest(batch)
+	}
+	ids := map[string]int{}
+	for _, s := range m.sources {
+		ids[s.ID] = s.Count
+	}
+	if _, ok := ids["ns/quiet/c"]; !ok {
+		t.Fatal("quiet pod disappeared from [context] after the ring wrapped")
+	}
+	if ids["ns/quiet/c"] != 0 {
+		t.Fatalf("quiet in-window count=%d want 0", ids["ns/quiet/c"])
+	}
+	if ids["ns/noisy/c"] == 0 {
+		t.Fatal("noisy pod should still have lines in the ring")
+	}
+	if len(m.sources) != 2 {
+		t.Fatalf("sources=%d want 2 (insertion order, sticky): %+v", len(m.sources), m.sources)
+	}
+	if m.sources[0].ID != "ns/quiet/c" || m.sources[1].ID != "ns/noisy/c" {
+		t.Fatalf("source order shuffled: %+v", m.sources)
+	}
+}
+
+func TestDualContextSources(t *testing.T) {
+	m := New(Options{Contexts: []string{"prod1", "prod2"}}).(*model)
+	m.width, m.height = 140, 40
+	m.showSources = true
+	m.showDetail = true
+	m.ingest(LogBatchMsg{
+		{Context: "prod1", Namespace: "ns", Pod: "nginx-a", Container: "nginx", Line: `{"msg":"one"}`},
+		{Context: "prod2", Namespace: "ns", Pod: "nginx-b", Container: "nginx", Line: `{"msg":"two"}`},
+	})
+	ly := m.layout()
+	if ly.srcH2 == 0 || ly.srcH+ly.srcH2 != ly.bodyH {
+		t.Fatalf("dual sources heights %d+%d body=%d", ly.srcH, ly.srcH2, ly.bodyH)
+	}
+	v := m.View()
+	for _, name := range []string{"[context · prod1]", "[context · prod2]"} {
+		if !strings.Contains(v, name) {
+			t.Fatalf("missing %s in:\n%s", name, v)
+		}
+	}
+	logs := m.logsView(ly)
+	if !strings.Contains(logs, "prod1") || !strings.Contains(logs, "prod2") {
+		t.Fatalf("[logs] should prefix context:\n%s", logs)
+	}
+	if !strings.Contains(logs, "nginx-a") || !strings.Contains(logs, "nginx-b") {
+		t.Fatalf("[logs] missing pods:\n%s", logs)
+	}
+}
+
+func TestSingleContextNamedOnBorder(t *testing.T) {
+	m := New(Options{Context: "prod", Contexts: []string{"prod"}}).(*model)
+	m.width, m.height = 140, 40
+	m.showSources = true
+	m.showDetail = true
+	m.ingest(LogBatchMsg{{
+		Context: "prod", Namespace: "ns", Pod: "nginx-a", Container: "nginx",
+		Line: `{"msg":"one"}`,
+	}})
+	v := m.View()
+	if !strings.Contains(v, "[context · prod]") {
+		t.Fatalf("single context should name the pane:\n%s", v)
+	}
+	if strings.Contains(v, "[context]") && !strings.Contains(v, "[context · prod]") {
+		t.Fatal("bare [context] without the name")
+	}
+	logs := m.logsView(m.layout())
+	if !strings.Contains(logs, "prod") {
+		t.Fatalf("[logs] should prefix the context:\n%s", logs)
+	}
+}
+
 func TestPaneNamesOnBorder(t *testing.T) {
 	m := testModel(140, 40, true, true)
 	v := m.View()
-	for _, name := range []string{"[sources]", "[logs]"} {
+	for _, name := range []string{"[context]", "[logs]"} {
 		if !strings.Contains(v, name) {
 			t.Fatalf("missing %s in:\n%s", name, v)
 		}

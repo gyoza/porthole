@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
@@ -120,6 +121,8 @@ func (m *model) headerView() string {
 		}
 		label += "  e"
 		right = m.theme.error().Bold(true).Render(label)
+	} else if m.copiedN > 0 && time.Since(m.copiedAt) < 2500*time.Millisecond {
+		right = m.theme.okStyle().Render(fmt.Sprintf("copied %dB  y", m.copiedN))
 	}
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
@@ -136,7 +139,11 @@ func (m *model) bodyView(ly frame) string {
 		right = lipgloss.JoinVertical(lipgloss.Left, logs, m.detailView(ly))
 	}
 	if ly.srcW > 0 {
-		return lipgloss.JoinHorizontal(lipgloss.Top, m.sourcesView(ly), right)
+		left := m.sourcesView(ly, 0)
+		if ly.srcH2 > 0 {
+			left = lipgloss.JoinVertical(lipgloss.Left, left, m.sourcesView(ly, 1))
+		}
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	}
 	return right
 }
@@ -184,21 +191,28 @@ func (m *model) renderLine(ln logLine, width int, selected bool) string {
 	if selected {
 		srcSt = srcSt.Background(m.theme.selBg)
 	}
-	prefix := srcSt.Render(fmt.Sprintf("%-22s", truncate(src, 22)))
+	label := fmt.Sprintf("%-22s", truncate(src, 22))
+	if ctx := m.lineContext(ln); ctx != "" {
+		label = fmt.Sprintf("%-8s %-16s", truncate(ctx, 8), truncate(src, 16))
+	}
+	prefix := srcSt.Render(label)
 
 	re := m.live.Regexp
 	var body string
 	switch ln.Rec.Kind {
 	case parse.KindHTTP:
-		body = paintHTTP(m.theme, ln.Rec, base, re, m.theme.warn)
+		body = paintHTTP(m.theme, ln.Rec, base, re, m.showTime)
 	case parse.KindApp:
-		body = paintApp(m.theme, ln.Rec, base, re, m.theme.warn)
+		body = paintApp(m.theme, ln.Rec, base, re, m.showTime)
 	default:
-		if re != nil && re.MatchString(ln.Rec.Display) {
-			hi := base.Background(m.theme.warn)
-			body = highlight(ln.Rec.Display, re, base, hi)
+		text := ln.Rec.Display
+		if !m.showTime {
+			text = parse.StripLeadingTime(text)
+		}
+		if re != nil && re.MatchString(text) {
+			body = highlight(text, re, base, m.theme.match())
 		} else {
-			body = base.Render(ln.Rec.Display)
+			body = base.Render(text)
 		}
 	}
 	if m.logCol > 0 {
@@ -256,16 +270,30 @@ func skipANSICells(s string, n int) string {
 	return b.String()
 }
 
-func (m *model) sourcesView(ly frame) string {
-	rows := make([]string, 0, len(m.sources))
-	for i, s := range m.sources {
+func (m *model) sourcesView(ly frame, which int) string {
+	focus := paneSources
+	h, avail, sel := ly.srcH, ly.srcRows, m.srcSel
+	name := m.contextPaneName(which)
+	list := m.sources
+	if m.dualContext() && which < len(m.opts.Contexts) {
+		list = m.sourcesFor(m.opts.Contexts[which])
+		if which == 1 {
+			focus = paneSources2
+			h, avail, sel = ly.srcH2, ly.srcRows2, m.srcSel2
+		}
+	}
+	rows := make([]string, 0, len(list))
+	for i, s := range list {
 		mark := " "
 		if s.ID == m.srcOnly {
 			mark = "●"
 		}
 		label := fmt.Sprintf("%s %-16s %5d", mark, truncate(shortSource(s.ID), 16), s.Count)
 		st := lipgloss.NewStyle().Foreground(s.Color)
-		if i == m.srcSel && m.focus == paneSources {
+		if s.Count == 0 {
+			st = m.theme.dim()
+		}
+		if i == sel && m.focus == focus {
 			st = st.Background(m.theme.selBg).Bold(true)
 		}
 		rows = append(rows, st.Render(truncate(label, max(4, ly.srcW-4))))
@@ -273,10 +301,10 @@ func (m *model) sourcesView(ly frame) string {
 	if len(rows) == 0 {
 		rows = append(rows, m.theme.dim().Render("  (none yet)"))
 	}
-	if start := srcWindow(m.srcSel, len(rows), ly.srcRows); start > 0 {
+	if start := srcWindow(sel, len(rows), avail); start > 0 {
 		rows = rows[start:]
 	}
-	return m.pane("sources", "", m.focus == paneSources, ly.srcW, ly.srcH, strings.Join(rows, "\n"))
+	return m.pane(name, "", m.focus == focus, ly.srcW, h, strings.Join(rows, "\n"))
 }
 
 func srcWindow(sel, n, avail int) int {
@@ -300,6 +328,9 @@ func (m *model) detailView(ly frame) string {
 			name = "json"
 		}
 		extra = shortSource(ln.Source)
+		if !ln.Rec.Timestamp.IsZero() {
+			extra = ln.Rec.Timestamp.Format("15:04:05.000") + "  " + extra
+		}
 	}
 	rows := ly.detRows
 	start := m.detailOff
@@ -391,7 +422,7 @@ func (m *model) filterView() string {
 }
 
 func (m *model) footerText() string {
-	return " / filter   n ns   ←→ scroll   j/k move   f follow   p pause   d detail   s sources   e errors   ? help   q quit"
+	return " / filter   n ns   ←→ scroll   j/k move   y copy   f follow   t time   p pause   d detail   s context   e errors   ? help   q quit"
 }
 
 func (m *model) nsView() string {
@@ -477,6 +508,41 @@ func (m *model) helpView() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
+func (m *model) contextPaneName(which int) string {
+	if name := m.contextName(which); name != "" {
+		return "context · " + name
+	}
+	return "context"
+}
+
+func (m *model) contextName(which int) string {
+	if which >= 0 && which < len(m.opts.Contexts) && m.opts.Contexts[which] != "" {
+		return m.opts.Contexts[which]
+	}
+	if which == 0 && m.opts.Context != "" && !strings.Contains(m.opts.Context, ",") {
+		return m.opts.Context
+	}
+	return ""
+}
+
+func (m *model) lineContext(ln logLine) string {
+	if ln.Ev.Context != "" {
+		return ln.Ev.Context
+	}
+	if len(m.opts.Contexts) == 0 {
+		return ""
+	}
+	return sourceContext(ln.Source)
+}
+
+func sourceContext(id string) string {
+	i := strings.IndexByte(id, '/')
+	if i <= 0 {
+		return ""
+	}
+	return id[:i]
+}
+
 func shortSource(id string) string {
 	parts := strings.Split(id, "/")
 	switch len(parts) {
@@ -487,7 +553,7 @@ func shortSource(id string) string {
 	case 2:
 		return parts[1]
 	default:
-		// pod/container, drop namespace
+		// pod/container, drop context and namespace
 		return parts[len(parts)-2] + "/" + parts[len(parts)-1]
 	}
 }

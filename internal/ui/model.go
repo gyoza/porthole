@@ -27,11 +27,13 @@ const (
   ← →          scroll a clipped log line
   g G          top / bottom
   pgup pgdn    page
-  f            follow tail
-  p            pause / resume ingest
-               (follow does not steal detail/sources while those panes are focused)
+  f            follow / unfollow the tail
+  p            pause / resume ingest (stop new lines)
+               (unfollow [logs] with f; follow does not steal [json]/[context])
+  t            timestamps in [logs] (off by default; always on [json]/[raw])
   d            toggle [json]/[raw] pane
-  s            toggle [sources] pane
+  s            toggle [context] pane (two panes when --context is repeated)
+  y            copy selected [json]/[raw] to the clipboard
   e            view client / tail errors
   n            choose namespace
   ?            this help
@@ -48,6 +50,7 @@ type pane int
 const (
 	paneLogs pane = iota
 	paneSources
+	paneSources2
 	paneFilter
 	paneDetail
 )
@@ -92,6 +95,7 @@ type srcStat struct {
 type Options struct {
 	Title      string
 	Context    string
+	Contexts   []string
 	Namespace  string
 	Query      string
 	Namespaces []string
@@ -99,6 +103,9 @@ type Options struct {
 	Include string
 	// Exclude hides matching lines (Stern -e/--exclude). Not shown in / .
 	Exclude string
+	// ShowTime paints parsed clocks in [logs]. Off by default; [json]/[raw]
+	// still shows the stamp on the title rule.
+	ShowTime bool
 	// SwitchNS retargets the cluster tailer. Empty means all namespaces.
 	// Nil when the source is a file, stdin, or demo.
 	SwitchNS func(string)
@@ -117,6 +124,7 @@ type model struct {
 	logCol   int
 	follow   bool
 	paused   bool
+	showTime bool
 	eof      bool
 
 	showDetail  bool
@@ -132,6 +140,7 @@ type model struct {
 	sources []srcStat
 	srcIdx  map[string]int
 	srcSel  int
+	srcSel2 int
 	srcOnly string
 
 	nsOnly   string
@@ -148,6 +157,9 @@ type model struct {
 	errs     []statusErr
 	showErrs bool
 	errSel   int
+
+	copiedN  int
+	copiedAt time.Time
 
 	started time.Time
 	err     error
@@ -172,6 +184,7 @@ func New(opts Options) tea.Model {
 		opts:        opts,
 		theme:       defaultTheme(),
 		follow:      true,
+		showTime:    opts.ShowTime,
 		showDetail:  true,
 		showSources: true,
 		focus:       paneLogs,
@@ -211,6 +224,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ErrMsg:
 		m.err = msg.Err
 		m.pushErr(time.Now(), msg.Err.Error())
+		return m, nil
+
+	case copiedMsg:
+		m.copiedN = msg.n
+		m.copiedAt = time.Now()
 		return m, nil
 
 	case StatusErrMsg:
@@ -314,16 +332,17 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if m.focus == paneSources {
+	if m.focus == paneSources || m.focus == paneSources2 {
+		list, sel := m.sourceList(m.focus)
 		switch msg.String() {
 		case "j", "down":
-			if m.srcSel < len(m.sources)-1 {
-				m.srcSel++
+			if *sel < len(list)-1 {
+				(*sel)++
 			}
 			return m, nil
 		case "k", "up":
-			if m.srcSel > 0 {
-				m.srcSel--
+			if *sel > 0 {
+				(*sel)--
 			}
 			return m, nil
 		}
@@ -376,15 +395,29 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cyclePane(-1)
 	case "d":
 		m.showDetail = !m.showDetail
+		if !m.showDetail && m.focus == paneDetail {
+			m.focus = paneLogs
+		}
 		m.relayout()
 	case "s":
 		m.showSources = !m.showSources
+		if !m.showSources && (m.focus == paneSources || m.focus == paneSources2) {
+			m.focus = paneLogs
+		}
 		m.relayout()
 	case "p":
 		m.paused = !m.paused
 	case "f":
-		m.follow = true
-		m.jumpBottom()
+		m.follow = !m.follow
+		if m.follow {
+			m.jumpBottom()
+		}
+	case "t":
+		m.showTime = !m.showTime
+	case "y":
+		if text, ok := m.selectedCopy(); ok {
+			return m, copyToClipboard(text)
+		}
 	case "g", "home":
 		m.follow = false
 		m.cursor = 0
@@ -404,14 +437,17 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgup", "ctrl+u":
 		m.move(-m.logHeight())
 	case "enter":
-		if m.focus == paneSources && m.srcSel >= 0 && m.srcSel < len(m.sources) {
-			id := m.sources[m.srcSel].ID
-			if m.srcOnly == id {
-				m.srcOnly = ""
-			} else {
-				m.srcOnly = id
+		if m.focus == paneSources || m.focus == paneSources2 {
+			list, sel := m.sourceList(m.focus)
+			if *sel >= 0 && *sel < len(list) {
+				id := list[*sel].ID
+				if m.srcOnly == id {
+					m.srcOnly = ""
+				} else {
+					m.srcOnly = id
+				}
+				m.refilter()
 			}
-			m.refilter()
 		} else {
 			m.showDetail = !m.showDetail
 			m.relayout()
@@ -447,13 +483,14 @@ func (m *model) wheel(delta int) {
 	switch m.focus {
 	case paneDetail:
 		m.scrollDetail(delta)
-	case paneSources:
-		m.srcSel += delta
-		if m.srcSel < 0 {
-			m.srcSel = 0
+	case paneSources, paneSources2:
+		list, sel := m.sourceList(m.focus)
+		*sel += delta
+		if *sel < 0 {
+			*sel = 0
 		}
-		if m.srcSel >= len(m.sources) {
-			m.srcSel = len(m.sources) - 1
+		if *sel >= len(list) {
+			*sel = len(list) - 1
 		}
 	default:
 		m.move(delta)
@@ -465,6 +502,9 @@ func (m *model) cyclePane(dir int) {
 	order := []pane{paneLogs}
 	if m.showSources {
 		order = append(order, paneSources)
+		if m.dualContext() {
+			order = append(order, paneSources2)
+		}
 	}
 	if m.showDetail {
 		order = append(order, paneDetail)
@@ -503,9 +543,14 @@ func (m *model) ingest(batch []source.Event) {
 		}
 	}
 	if len(m.lines) > maxLines {
-		dropped := len(m.lines) - maxLines
-		m.lines = append([]logLine(nil), m.lines[dropped:]...)
-		m.rebuildSources()
+		n := len(m.lines) - maxLines
+		for _, ln := range m.lines[:n] {
+			m.dropSourceLine(ln)
+		}
+		m.lines = append([]logLine(nil), m.lines[n:]...)
+		// filtered still holds pre-trim indices; selected() would panic
+		// (index 20044 of a 20000-line ring) if refilter pinned first.
+		m.filtered = m.filtered[:0]
 		m.refilter()
 	}
 	if m.viewFollowsTail() && len(m.filtered) > 0 {
@@ -529,12 +574,33 @@ func (m *model) viewFollowsTail() bool {
 	return m.focus == paneLogs || m.focus == paneFilter
 }
 
-func (m *model) rebuildSources() {
-	m.sources = m.sources[:0]
-	m.srcIdx = map[string]int{}
-	for _, ln := range m.lines {
-		m.bumpSource(ln)
+func (m *model) dualContext() bool {
+	return len(m.opts.Contexts) >= 2
+}
+
+func (m *model) sourceList(p pane) ([]srcStat, *int) {
+	if !m.dualContext() {
+		return m.sources, &m.srcSel
 	}
+	idx, sel := 0, &m.srcSel
+	if p == paneSources2 {
+		idx = 1
+		sel = &m.srcSel2
+	}
+	if idx >= len(m.opts.Contexts) {
+		return nil, sel
+	}
+	return m.sourcesFor(m.opts.Contexts[idx]), sel
+}
+
+func (m *model) sourcesFor(ctx string) []srcStat {
+	out := make([]srcStat, 0, len(m.sources))
+	for _, s := range m.sources {
+		if sourceContext(s.ID) == ctx {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (m *model) bumpSource(ln logLine) {
@@ -544,6 +610,19 @@ func (m *model) bumpSource(ln logLine) {
 	}
 	m.srcIdx[ln.Source] = len(m.sources)
 	m.sources = append(m.sources, srcStat{ID: ln.Source, Color: ln.Color, Count: 1})
+}
+
+// dropSourceLine decrements the in-window count when a line leaves the
+// ring. The source itself stays so [context] does not forget a pod just
+// because noisier pods pushed its lines out.
+func (m *model) dropSourceLine(ln logLine) {
+	i, ok := m.srcIdx[ln.Source]
+	if !ok {
+		return
+	}
+	if m.sources[i].Count > 0 {
+		m.sources[i].Count--
+	}
 }
 
 func (m *model) keepLine(ln logLine) bool {
@@ -725,7 +804,11 @@ func (m *model) selected() (logLine, bool) {
 	if m.cursor < 0 || m.cursor >= len(m.filtered) {
 		return logLine{}, false
 	}
-	return m.lines[m.filtered[m.cursor]], true
+	idx := m.filtered[m.cursor]
+	if idx < 0 || idx >= len(m.lines) {
+		return logLine{}, false
+	}
+	return m.lines[idx], true
 }
 
 func (m *model) refreshDetail() {
@@ -803,13 +886,14 @@ func (m *model) logHeight() int {
 // sum to m.height and the columns sum to m.width so toggling detail cannot
 // push the header off-screen.
 type frame struct {
-	bodyW, bodyH int
-	srcW, srcH   int
-	logW, logH   int
-	detW, detH   int
-	logRows      int
-	detRows      int
-	srcRows      int
+	bodyW, bodyH    int
+	srcW, srcH      int
+	srcH2, srcRows2 int
+	logW, logH      int
+	detW, detH      int
+	logRows         int
+	detRows         int
+	srcRows         int
 }
 
 func (m *model) layout() frame {
@@ -827,6 +911,12 @@ func (m *model) layout() frame {
 		}
 		f.srcH = f.bodyH
 		f.srcRows = max(1, f.srcH-2)
+		if m.dualContext() {
+			f.srcH = f.bodyH / 2
+			f.srcH2 = f.bodyH - f.srcH
+			f.srcRows = max(1, f.srcH-2)
+			f.srcRows2 = max(1, f.srcH2-2)
+		}
 	}
 
 	rightW := f.bodyW - f.srcW

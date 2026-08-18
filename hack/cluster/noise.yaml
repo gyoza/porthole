@@ -1,0 +1,136 @@
+# Local load fixture: many pods, mixed formats, quiet + \r progress.
+# Does not need Envoy/MetalLB. Scale noisy up until the TUI sweats.
+#
+#   kubectl apply -f hack/cluster/noise.yaml
+#   kubectl -n noise scale deploy/noisy --replicas=40
+#   ./bin/porthole -n noise
+#   kubectl delete ns noise
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: noise
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: noisy
+  namespace: noise
+  labels:
+    app: noisy
+spec:
+  replicas: 24
+  selector:
+    matchLabels:
+      app: noisy
+  template:
+    metadata:
+      labels:
+        app: noisy
+    spec:
+      containers:
+        - name: chatter
+          image: alpine:3.20
+          command: ["sh", "-c"]
+          args:
+            - |
+              i=0
+              while true; do
+                ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+                i=$((i+1))
+                id=$(printf '%08x-%04x-%04x-%04x-%012x' $i $i $i $i $i)
+                case $((i % 7)) in
+                  0) echo "{\"start_time\":\"$ts\",\"method\":\"GET\",\"x-envoy-origin-path\":\"/api/orders\",\"response_code\":200,\"duration\":$((i%80)),\":authority\":\"www.example.com\",\"x-request-id\":\"$id\"}" ;;
+                  1) echo "{\"level\":\"info\",\"ts\":\"$ts\",\"logger\":\"xds\",\"msg\":\"pushed snapshot\",\"node\":\"envoy\",\"resources\":4}" ;;
+                  2) echo "$ts INFO  worker tick n=$i request_id=$id" ;;
+                  3) echo "$ts WARN  cache miss key=user:$i" ;;
+                  4) echo "[ERROR] failed to frobnicate widget id=$i" ;;
+                  5) echo "10.1.0.$((i%250)) - - [$(date -u +"%d/%b/%Y:%H:%M:%S +0000")] \"GET /index.html HTTP/1.1\" 200 $((200+i%800))" ;;
+                  6) echo "ts=$ts level=error msg=\"upstream timeout\" method=GET path=/api/orders status=504 request_id=$id" ;;
+                esac
+                sleep 0.05
+              done
+          resources:
+            requests:
+              cpu: 1m
+              memory: 8Mi
+            limits:
+              cpu: 25m
+              memory: 16Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quiet
+  namespace: noise
+  labels:
+    app: quiet
+spec:
+  replicas: 8
+  selector:
+    matchLabels:
+      app: quiet
+  template:
+    metadata:
+      labels:
+        app: quiet
+    spec:
+      containers:
+        - name: quiet
+          image: alpine:3.20
+          command: ["sh", "-c"]
+          args:
+            - |
+              i=0
+              while true; do
+                i=$((i+1))
+                echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") INFO  quiet heartbeat n=$i"
+                sleep 8
+              done
+          resources:
+            requests:
+              cpu: 1m
+              memory: 8Mi
+            limits:
+              cpu: 10m
+              memory: 16Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: progress
+  namespace: noise
+  labels:
+    app: progress
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: progress
+  template:
+    metadata:
+      labels:
+        app: progress
+    spec:
+      containers:
+        - name: awscli
+          image: alpine:3.20
+          command: ["sh", "-c"]
+          args:
+            - |
+              n=1024
+              while true; do
+                n=$((n+2048))
+                if [ "$n" -gt 40000 ]; then n=1024; fi
+                printf '  %% Total    %% Received %% Xferd  Average Speed   Time    Time     Time  Current\r'
+                printf '                                 Dload  Upload   Total   Spent    Left  Speed\r'
+                printf '100 %s  0 %s    0     0   847k      0 --:--:-- --:--:-- --:--:--  847k\n' "$n" "$n"
+                sleep 0.2
+              done
+          resources:
+            requests:
+              cpu: 1m
+              memory: 8Mi
+            limits:
+              cpu: 15m
+              memory: 16Mi

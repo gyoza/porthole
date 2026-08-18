@@ -3,7 +3,7 @@ PKG := ./cmd/porthole
 VERSION ?= 0.0.1
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test tidy run-demo run-file fmt vet dist
+.PHONY: build test tidy run-demo run-load run-file fmt vet dist load-cluster unload-cluster
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) $(PKG)
@@ -30,5 +30,19 @@ vet:
 run-demo: build
 	./bin/$(BINARY) --demo
 
+# In-process: 80 pods, 2k lines/s, quiet + \r progress. No cluster.
+run-load: build
+	./bin/$(BINARY) --demo --demo-pods 80 --demo-rate 2000 --demo-quiet 10 --demo-progress 2
+
 run-file: build
 	./bin/$(BINARY) --file testdata/mixed.log
+
+# Real pods on the current kube context. Scale noisy if you want more pain.
+load-cluster:
+	kubectl apply -f hack/cluster/noise.yaml
+	@echo "wait: kubectl -n noise get pods"
+	@echo "tail: ./bin/porthole -n noise"
+	@echo "more: kubectl -n noise scale deploy/noisy --replicas=40"
+
+unload-cluster:
+	kubectl delete ns noise --ignore-not-found

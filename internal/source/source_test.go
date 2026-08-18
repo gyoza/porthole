@@ -33,6 +33,10 @@ func TestSourceID(t *testing.T) {
 	if ev.SourceID() != "ns/pod/c" {
 		t.Fatalf("%s", ev.SourceID())
 	}
+	ev.Context = "prod1"
+	if ev.SourceID() != "prod1/ns/pod/c" {
+		t.Fatalf("%s", ev.SourceID())
+	}
 }
 
 func TestHashColorStable(t *testing.T) {
