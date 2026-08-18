@@ -33,6 +33,7 @@ const (
   t            timestamps in [logs] (off by default; always on [json]/[raw])
   d            toggle [json]/[raw] pane
   s            toggle [context] pane (two panes when --context is repeated)
+  y            copy selected [json]/[raw] to the clipboard
   e            view client / tail errors
   n            choose namespace
   ?            this help
@@ -157,6 +158,9 @@ type model struct {
 	showErrs bool
 	errSel   int
 
+	copiedN  int
+	copiedAt time.Time
+
 	started time.Time
 	err     error
 }
@@ -220,6 +224,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ErrMsg:
 		m.err = msg.Err
 		m.pushErr(time.Now(), msg.Err.Error())
+		return m, nil
+
+	case copiedMsg:
+		m.copiedN = msg.n
+		m.copiedAt = time.Now()
 		return m, nil
 
 	case StatusErrMsg:
@@ -405,6 +414,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "t":
 		m.showTime = !m.showTime
+	case "y":
+		if text, ok := m.selectedCopy(); ok {
+			return m, copyToClipboard(text)
+		}
 	case "g", "home":
 		m.follow = false
 		m.cursor = 0

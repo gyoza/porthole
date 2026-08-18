@@ -105,6 +105,7 @@ make unload-cluster
 | `j` `k` / arrows | Move the selected line |
 | `g` / `G` | Top / bottom |
 | `f` | Follow / unfollow the tail |
+| `y` | Copy selected `[json]`/`[raw]` to the clipboard |
 | `t` | Timestamps in `[logs]` (off by default) |
 | `p` | Pause ingest |
 | `d` | Toggle selected-line detail |

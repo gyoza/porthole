@@ -249,6 +249,17 @@ func TestPaneKeepsPaintColors(t *testing.T) {
 	}
 }
 
+func TestSelectedCopyUsesPretty(t *testing.T) {
+	m := testModel(140, 40, true, true)
+	text, ok := m.selectedCopy()
+	if !ok {
+		t.Fatal("expected a selected line")
+	}
+	if !strings.Contains(text, `"method"`) && !strings.Contains(text, "GET") {
+		t.Fatalf("copy text should be raw/pretty JSON, got %q", text[:min(80, len(text))])
+	}
+}
+
 func TestRegexMatchHasDarkOnGold(t *testing.T) {
 	st := defaultTheme().match()
 	got := st.Render("500")
