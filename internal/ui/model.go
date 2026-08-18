@@ -33,7 +33,7 @@ const (
   t            timestamps in [logs] (off by default; always on [json]/[raw])
   d            toggle [json]/[raw] pane
   s            toggle [context] pane (two panes when --context is repeated)
-  y            copy selected [json]/[raw] to the clipboard
+  c            copy selected [json]/[raw] to the clipboard
   e            view client / tail errors
   n            choose namespace
   ?            this help
@@ -414,7 +414,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "t":
 		m.showTime = !m.showTime
-	case "y":
+	case "c":
 		if text, ok := m.selectedCopy(); ok {
 			return m, copyToClipboard(text)
 		}
