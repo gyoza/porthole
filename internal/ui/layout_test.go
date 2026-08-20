@@ -249,6 +249,21 @@ func TestPaneKeepsPaintColors(t *testing.T) {
 	}
 }
 
+func TestExportSanitizedVsRaw(t *testing.T) {
+	m := testModel(140, 40, true, true)
+	raw := m.exportRaw()
+	if !strings.Contains(raw, `"method":"GET"`) {
+		t.Fatalf("raw export missing original JSON:\n%s", raw[:min(200, len(raw))])
+	}
+	san := m.exportSanitized()
+	if strings.Contains(san, `"method":"GET"`) {
+		t.Fatalf("sanitized export should be the [logs] view, not JSON:\n%s", san[:min(200, len(san))])
+	}
+	if !strings.Contains(san, "GET") || !strings.Contains(san, "/api/orders") {
+		t.Fatalf("sanitized export missing parsed fields:\n%s", san[:min(200, len(san))])
+	}
+}
+
 func TestSelectedCopyUsesPretty(t *testing.T) {
 	m := testModel(140, 40, true, true)
 	text, ok := m.selectedCopy()

@@ -34,6 +34,8 @@ const (
   d            toggle [json]/[raw] pane
   s            toggle [context] pane (two panes when --context is repeated)
   y            copy selected [json]/[raw] to the clipboard
+  x            export [logs] (sanitized, current filter) to a file
+  X            export every raw line in memory to a file
   e            view client / tail errors
   n            choose namespace
   ?            this help
@@ -158,8 +160,10 @@ type model struct {
 	showErrs bool
 	errSel   int
 
-	copiedN  int
-	copiedAt time.Time
+	copiedN    int
+	copiedAt   time.Time
+	exportNote string
+	exportAt   time.Time
 
 	started time.Time
 	err     error
@@ -229,6 +233,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case copiedMsg:
 		m.copiedN = msg.n
 		m.copiedAt = time.Now()
+		return m, nil
+
+	case exportedMsg:
+		if msg.err != nil {
+			m.pushErr(time.Now(), "export: "+msg.err.Error())
+			return m, nil
+		}
+		m.exportNote = fmt.Sprintf("wrote %d  %s", msg.n, msg.path)
+		m.exportAt = time.Now()
 		return m, nil
 
 	case StatusErrMsg:
@@ -418,6 +431,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if text, ok := m.selectedCopy(); ok {
 			return m, copyToClipboard(text)
 		}
+	case "x":
+		return m, writeExport("logs", m.exportSanitized())
+	case "X":
+		return m, writeExport("raw", m.exportRaw())
 	case "g", "home":
 		m.follow = false
 		m.cursor = 0

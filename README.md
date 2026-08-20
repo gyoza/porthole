@@ -106,6 +106,8 @@ make unload-cluster
 | `g` / `G` | Top / bottom |
 | `f` | Follow / unfollow the tail |
 | `y` | Copy selected `[json]`/`[raw]` to the clipboard |
+| `x` | Export sanitized `[logs]` (current filter) to a file |
+| `X` | Export every raw line in memory to a file |
 | `t` | Timestamps in `[logs]` (off by default) |
 | `p` | Pause ingest |
 | `d` | Toggle selected-line detail |
