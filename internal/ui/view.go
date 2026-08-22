@@ -167,9 +167,15 @@ func (m *model) logsView(ly frame) string {
 			end = len(m.filtered)
 		}
 		innerW := max(8, ly.logW-4)
+		if m.offset < 0 {
+			m.offset = 0
+		}
 		for i := m.offset; i < end; i++ {
-			ln := m.lines[m.filtered[i]]
-			rows = append(rows, m.renderLine(ln, innerW, i == m.cursor))
+			idx := m.filtered[i]
+			if idx < 0 || idx >= len(m.lines) {
+				continue
+			}
+			rows = append(rows, m.renderLine(m.lines[idx], innerW, i == m.cursor))
 		}
 	}
 	for len(rows) < ly.logRows {

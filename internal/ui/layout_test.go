@@ -249,6 +249,24 @@ func TestPaneKeepsPaintColors(t *testing.T) {
 	}
 }
 
+func TestClampSelEmptyIsZeroNotMinusOne(t *testing.T) {
+	sel := 3
+	clampSel(&sel, 0)
+	if sel != 0 {
+		t.Fatalf("empty list sel=%d want 0 (len-1 would be -1 and panic later)", sel)
+	}
+	sel = -5
+	clampSel(&sel, 10)
+	if sel != 0 {
+		t.Fatalf("neg sel=%d", sel)
+	}
+	sel = 99
+	clampSel(&sel, 10)
+	if sel != 9 {
+		t.Fatalf("high sel=%d", sel)
+	}
+}
+
 func TestExportSanitizedVsRaw(t *testing.T) {
 	m := testModel(140, 40, true, true)
 	raw := m.exportRaw()

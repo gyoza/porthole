@@ -15,15 +15,8 @@ func Sanitize(s string) string {
 	if s == "" || !needsSanitize(s) {
 		return s
 	}
-	if i := strings.LastIndexByte(s, '\r'); i >= 0 {
-		parts := strings.Split(s, "\r")
-		s = ""
-		for j := len(parts) - 1; j >= 0; j-- {
-			if parts[j] != "" {
-				s = parts[j]
-				break
-			}
-		}
+	if strings.IndexByte(s, '\r') >= 0 {
+		s = lastCRSegment(s)
 	}
 	if strings.IndexByte(s, '\t') >= 0 {
 		s = strings.ReplaceAll(s, "\t", "    ")
@@ -35,6 +28,21 @@ func Sanitize(s string) string {
 		s = stripControls(s)
 	}
 	return s
+}
+
+// lastCRSegment keeps the final progress snapshot without Split-allocating
+// every empty \r piece (a 1MiB of CRs would otherwise make ~1e6 strings).
+func lastCRSegment(s string) string {
+	for {
+		i := strings.LastIndexByte(s, '\r')
+		if i < 0 {
+			return s
+		}
+		if i+1 < len(s) {
+			return s[i+1:]
+		}
+		s = s[:i]
+	}
 }
 
 func needsSanitize(s string) bool {

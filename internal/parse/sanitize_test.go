@@ -31,6 +31,18 @@ func TestSanitizeTabsAndCursor(t *testing.T) {
 	}
 }
 
+func TestLastCRSegmentNoSplitBomb(t *testing.T) {
+	if got := lastCRSegment("a\rb\r"); got != "b" {
+		t.Fatalf("got %q", got)
+	}
+	if got := lastCRSegment("\r\r\r"); got != "" {
+		t.Fatalf("all cr: %q", got)
+	}
+	if got := lastCRSegment("only"); got != "only" {
+		t.Fatalf("no cr: %q", got)
+	}
+}
+
 func TestSanitizeKeepsSGRColors(t *testing.T) {
 	in := "\x1b[32mGET\x1b[0m  \x1b[38;2;232;238;244m/ok\x1b[0m"
 	got := Sanitize(in)
