@@ -21,8 +21,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-var version = "0.0.1"
-
 type flags struct {
 	namespace  string
 	allNS      bool
@@ -72,7 +70,7 @@ Examples:
   kubectl logs -f deploy/foo | porthole
 `,
 		Args:    cobra.MaximumNArgs(1),
-		Version: version,
+		Version: versionString(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := ".*"
 			if len(args) == 0 {

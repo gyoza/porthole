@@ -1,6 +1,6 @@
 BINARY := porthole
 PKG := ./cmd/porthole
-VERSION ?= 0.0.1
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 .PHONY: build test tidy run-demo run-load run-file fmt vet dist load-cluster unload-cluster
