@@ -34,6 +34,8 @@ const (
   d            toggle [json]/[raw] pane
   s            toggle [context] pane (two panes when --context is repeated)
   y            copy selected [json]/[raw] to the clipboard
+  x            export [logs] (sanitized, current filter) to a file
+  X            export every raw line in memory to a file
   e            view client / tail errors
   n            choose namespace
   ?            this help
@@ -158,8 +160,10 @@ type model struct {
 	showErrs bool
 	errSel   int
 
-	copiedN  int
-	copiedAt time.Time
+	copiedN    int
+	copiedAt   time.Time
+	exportNote string
+	exportAt   time.Time
 
 	started time.Time
 	err     error
@@ -229,6 +233,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case copiedMsg:
 		m.copiedN = msg.n
 		m.copiedAt = time.Now()
+		return m, nil
+
+	case exportedMsg:
+		if msg.err != nil {
+			m.pushErr(time.Now(), "export: "+msg.err.Error())
+			return m, nil
+		}
+		m.exportNote = fmt.Sprintf("wrote %d  %s", msg.n, msg.path)
+		m.exportAt = time.Now()
 		return m, nil
 
 	case StatusErrMsg:
@@ -418,6 +431,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if text, ok := m.selectedCopy(); ok {
 			return m, copyToClipboard(text)
 		}
+	case "x":
+		return m, writeExport("logs", m.exportSanitized())
+	case "X":
+		return m, writeExport("raw", m.exportRaw())
 	case "g", "home":
 		m.follow = false
 		m.cursor = 0
@@ -486,12 +503,7 @@ func (m *model) wheel(delta int) {
 	case paneSources, paneSources2:
 		list, sel := m.sourceList(m.focus)
 		*sel += delta
-		if *sel < 0 {
-			*sel = 0
-		}
-		if *sel >= len(list) {
-			*sel = len(list) - 1
-		}
+		clampSel(sel, len(list))
 	default:
 		m.move(delta)
 		m.refreshDetail()
@@ -603,10 +615,25 @@ func (m *model) sourcesFor(ctx string) []srcStat {
 	return out
 }
 
+func clampSel(sel *int, n int) {
+	if n <= 0 {
+		*sel = 0
+		return
+	}
+	if *sel < 0 {
+		*sel = 0
+	}
+	if *sel >= n {
+		*sel = n - 1
+	}
+}
+
 func (m *model) bumpSource(ln logLine) {
 	if i, ok := m.srcIdx[ln.Source]; ok {
-		m.sources[i].Count++
-		return
+		if i >= 0 && i < len(m.sources) {
+			m.sources[i].Count++
+			return
+		}
 	}
 	m.srcIdx[ln.Source] = len(m.sources)
 	m.sources = append(m.sources, srcStat{ID: ln.Source, Color: ln.Color, Count: 1})
@@ -617,7 +644,7 @@ func (m *model) bumpSource(ln logLine) {
 // because noisier pods pushed its lines out.
 func (m *model) dropSourceLine(ln logLine) {
 	i, ok := m.srcIdx[ln.Source]
-	if !ok {
+	if !ok || i < 0 || i >= len(m.sources) {
 		return
 	}
 	if m.sources[i].Count > 0 {

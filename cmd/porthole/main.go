@@ -409,12 +409,14 @@ func runOneTail(ctx context.Context, cs kubernetes.Interface, watchNS string, op
 		tkopts := opts
 		tkopts.Namespace = current
 		tkopts.AllNS = current == ""
+		ns := current
 		go func() {
-			done <- source.TailPods(tctx, cs, current, tkopts, events)
+			done <- source.TailPods(tctx, cs, ns, tkopts, events)
 		}()
 		select {
 		case <-ctx.Done():
 			tcancel()
+			<-done // TailPods may still be sending; closing `events` before this panics
 			return
 		case next := <-switchCh:
 			tcancel()

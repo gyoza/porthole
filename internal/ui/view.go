@@ -121,6 +121,8 @@ func (m *model) headerView() string {
 		}
 		label += "  e"
 		right = m.theme.error().Bold(true).Render(label)
+	} else if m.exportNote != "" && time.Since(m.exportAt) < 4*time.Second {
+		right = m.theme.okStyle().Render(m.exportNote)
 	} else if m.copiedN > 0 && time.Since(m.copiedAt) < 2500*time.Millisecond {
 		right = m.theme.okStyle().Render(fmt.Sprintf("copied %dB  y", m.copiedN))
 	}
@@ -165,9 +167,15 @@ func (m *model) logsView(ly frame) string {
 			end = len(m.filtered)
 		}
 		innerW := max(8, ly.logW-4)
+		if m.offset < 0 {
+			m.offset = 0
+		}
 		for i := m.offset; i < end; i++ {
-			ln := m.lines[m.filtered[i]]
-			rows = append(rows, m.renderLine(ln, innerW, i == m.cursor))
+			idx := m.filtered[i]
+			if idx < 0 || idx >= len(m.lines) {
+				continue
+			}
+			rows = append(rows, m.renderLine(m.lines[idx], innerW, i == m.cursor))
 		}
 	}
 	for len(rows) < ly.logRows {
@@ -422,7 +430,7 @@ func (m *model) filterView() string {
 }
 
 func (m *model) footerText() string {
-	return " / filter   n ns   ←→ scroll   j/k move   y copy   f follow   t time   p pause   d detail   s context   e errors   ? help   q quit"
+	return " / filter   n ns   ←→ scroll   j/k move   y copy   x/X export   f follow   t time   p pause   d detail   s context   e errors   ? help   q quit"
 }
 
 func (m *model) nsView() string {
