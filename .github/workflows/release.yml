@@ -1,0 +1,66 @@
+name: release
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: bump patch tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git fetch --tags origin
+          if git describe --exact-match --tags HEAD >/dev/null 2>&1; then
+            echo "HEAD already tagged $(git describe --exact-match --tags HEAD)"
+            exit 0
+          fi
+          last=$(git tag -l 'v*.*.*' --sort=-v:refname | head -1)
+          if [ -z "$last" ]; then
+            last=v0.0.0
+          fi
+          ver=${last#v}
+          a=${ver%%.*}
+          rest=${ver#*.}
+          b=${rest%%.*}
+          c=${rest#*.}
+          c=${c%%-*}
+          c=$((c + 1))
+          new="v${a}.${b}.${c}"
+          git tag "$new"
+          git push origin "$new"
+          echo "tagged $new"
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - run: go test ./...
+      - name: dist
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          make dist VERSION="$ver"
+      - name: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
