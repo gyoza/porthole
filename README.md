@@ -18,6 +18,10 @@ Switches `--demo` and `--file` work with no cluster at all.
 Linux (x86-64) and macOS (Intel and Apple Silicon) binaries are on the
 [Releases](https://github.com/gyoza/porthole/releases) page.
 
+Merges to `master` cut the next patch tag (`v0.0.1` → `v0.0.2`) and attach
+those binaries. `go install …@latest` follows the newest tag, not the
+branch tip.
+
 ```bash
 go install github.com/gyoza/porthole/cmd/porthole@latest
 ```
